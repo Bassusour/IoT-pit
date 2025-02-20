@@ -6,9 +6,10 @@
 #include <poll.h>
 #include <sys/time.h>
 #include <limits.h>
+#include <fcntl.h>
 
 #define PORT 23
-#define MAX_CLIENTS 4096 // Same as endlessh
+#define MAX_CLIENTS 4096
 #define DELAY_MS 1000
 
 #define IAC 255
@@ -29,37 +30,52 @@ unsigned char negotiations[][3] = {
 int num_options = sizeof(negotiations) / sizeof(negotiations[0]);
 
 struct client {
-    char ipaddr[INET_ADDRSTRLEN];
-    long long connect_time;
-    // long long send_next;
-    // struct client *next;
-    int port;
     int fd;
+    long long send_next;
+    struct client *next;
 };
 
-static struct client *client_new(int fd)
-{
-    struct client *client = malloc(sizeof(struct client));
-    if (client == NULL) {
-        return NULL;
-    }
+// queue for the order of clients in descending order of send time
+struct fifo {
+    struct client *head;
+    struct client *tail;
+    int length;
+};
 
-    client->ipaddr[0] = '\0';
-    client->connect_time = epochms();
-    client->fd = fd;
-    client->next = NULL;
-    // client->send_next = send_next;
-    return client;
-}
-
-// struct timeval last_sent_time[MAX_CLIENTS]; // Per-client last message timestamp (For delay between option messages)
-
-long get_time_ms() {
+long long get_time_ms() {
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    return (tv.tv_sec * 1000) + (tv.tv_usec / 1000);
+    return (tv.tv_sec * 1000LL) + (tv.tv_usec / 1000);
 }
 
+void fifo_init(struct fifo *q) {
+    q->head = q->tail = NULL;
+    q->length = 0;
+}
+
+void fifo_append(struct fifo *q, struct client *c) {
+    c->next = NULL;
+    if (q->tail != NULL) {
+        q->tail->next = c;
+    } else {
+        q->head = c;
+    }
+    q->tail = c;
+    q->length++;
+}
+
+struct client *fifo_pop(struct fifo *q) {
+    if (q->head == NULL) return NULL;
+    struct client *c = q->head;
+    q->head = c->next;
+    if (!q->head) {
+        q->tail = NULL;
+    }
+    q->length--;
+    return c;
+}
+
+// TODO: Look more into server creation
 int create_server(int port) {
     int r; 
     int socket;
@@ -105,55 +121,68 @@ int create_server(int port) {
 }
 
 int main() {
-    int server_sock = server_create(PORT);
-    int client_sock;
-
-    struct sockaddr_in
-    struct server_addr
-    struct client_addr;
+    struct fifo client_queue;
+    fifo_init(&client_queue);
+    
+    int server_sock = create_server(PORT);
+    struct sockaddr_in client_addr;
     socklen_t addr_len = sizeof(client_addr);
 
-    // init poll
-    struct pollfd fds[MAX_CLIENTS];
-    int client_count = 0;
-
-    // monitors connections on index 0. > 0 monitors clients
-    fds[0].fd = server_sock;
-    fds[0].events = POLLIN;
-    client_count = 1; // poll index
-
-    printf("Telnet tarpit listening on port %d...\n", PORT);
-
+    struct pollfd fds = {server_sock, POLLIN, 0};
+    
     while (1) {
-        // Check for new connections
-        if (fds[0].revents & POLLIN) {
-            client_sock = accept(server_sock, (struct sockaddr *)&client_addr, &addr_len);
-            if (client_sock >= 0) {
-                printf("New connection from %socket\n", inet_ntoa(client_addr.sin_addr));
-                if (client_count < MAX_CLIENTS) {
-                    fds[client_count].fd = client_sock;
-                    fds[client_count].events = POLLOUT; // Ready to send
-                    client_count++;
-                } else {
-                    close(client_sock);
-                }
-            }
-        }
+        long long now = get_time_ms();
+        // Block until first client is received. Then block until head of queue should receive data
+        int timeout = (client_queue.head) ? client_queue.head->send_next - now : -1;
+        if (timeout < 0) timeout = 0;
 
-        // TODO: Figure out how to use poll
-        int pollSuccess = poll(fds, client_count, 100);
-
-        if (pollSuccess < 0) {
+        int poll_result = poll(&fds, 1, timeout);
+        if (poll_result < 0) {
             perror("Poll error");
             continue;
         }
 
-        // Monitors when clients can write, and sends random negotiation options
-        for (int i = 1; i < client_count; i++) {
-            if (fds[i].revents & POLLOUT) {
-                int index = rand() % num_options;
-                write(fds[i].fd, negotiations[index], sizeof(negotiations[index]));
-                // usleep(DELAY_MS * 1000); // TODO: Figure out how not to block thread
+        // Accept new connections
+        if (fds.revents & POLLIN) {
+            int client_fd = accept(server_sock, (struct sockaddr *)&client_addr, &addr_len);
+            if (client_fd >= 0) {
+                fcntl(client_fd, F_SETFL, O_NONBLOCK); // Set non-blocking mode
+                struct client *new_client = malloc(sizeof(struct client));
+                if (!new_client) {
+                    perror("Out of memory");
+                    close(client_fd);
+                    continue;
+                }
+
+                new_client->fd = client_fd;
+                new_client->send_next = now + DELAY_MS;
+                fifo_append(&client_queue, new_client);
+
+                printf("Accepted connection from %s:%d\n",
+                       inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+            }
+        }
+
+        // Process clients in queue
+        while (client_queue.head && client_queue.head->send_next <= now) {
+            struct client *c = fifo_pop(&client_queue);
+            if (!c) continue;
+
+            int option_index = rand() % num_options;
+            ssize_t out = write(c->fd, negotiations[option_index], sizeof(negotiations[option_index]));
+
+            if (out == -1) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    c->send_next = now + DELAY_MS; // Reschedule if write would block
+                    fifo_append(&client_queue, c);
+                } else {
+                    close(c->fd);
+                    free(c);
+                    printf("Client disconnected\n");
+                }
+            } else {
+                c->send_next = now + DELAY_MS;
+                fifo_append(&client_queue, c);
             }
         }
     }
