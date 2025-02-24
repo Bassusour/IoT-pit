@@ -7,10 +7,11 @@
 #include <sys/time.h>
 #include <limits.h>
 #include <fcntl.h>
+#include <errno.h>
 
 #define PORT 23
 #define MAX_CLIENTS 4096
-#define DELAY_MS 1000
+#define DELAY_MS 100
 
 #define IAC 255
 #define DO 253
@@ -48,7 +49,7 @@ long long get_time_ms() {
     return (tv.tv_sec * 1000LL) + (tv.tv_usec / 1000);
 }
 
-void fifo_init(struct fifo *q) {
+void queue_init(struct fifo *q) {
     q->head = q->tail = NULL;
     q->length = 0;
 }
@@ -75,22 +76,21 @@ struct client *fifo_pop(struct fifo *q) {
     return c;
 }
 
-// TODO: Look more into server creation
 int create_server(int port) {
     int r; 
-    int socket;
+    int sockfd;
     int value;
 
-    // IPv4 socket
-    socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (socket == -1) {
+    // IPv4 TCP socket
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd == -1) {
         perror("Socket creation failed");
         exit(EXIT_FAILURE);
     }
 
     // Enable SO_REUSEADDR for faster restarts
     value = 1;
-    r = setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value));
+    r = setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value));
     if (r == -1) {
         perror("setsockopt(SO_REUSEADDR) failed");
     }
@@ -101,28 +101,28 @@ int create_server(int port) {
         .sin_port = htons(port),
         .sin_addr = {INADDR_ANY}
     };
-    r = bind(socket, (struct sockaddr *)&addr4, sizeof(addr4));
+    r = bind(sockfd, (struct sockaddr *)&addr4, sizeof(addr4));
     if (r == -1) {
         perror("Bind failed");
-        close(socket);
+        close(sockfd);
         exit(EXIT_FAILURE);
     }
 
     // Listen with a very large backlog (INT_MAX) to handle massive bot traffic
-    r = listen(socket, INT_MAX);
+    r = listen(sockfd, INT_MAX);
     if (r == -1) {
         perror("Listen failed");
-        close(socket);
+        close(sockfd);
         exit(EXIT_FAILURE);
     }
 
     printf("Telnet tarpit listening on port %d...\n", port);
-    return socket;
+    return sockfd;
 }
 
 int main() {
     struct fifo client_queue;
-    fifo_init(&client_queue);
+    queue_init(&client_queue);
     
     int server_sock = create_server(PORT);
     struct sockaddr_in client_addr;
@@ -134,7 +134,7 @@ int main() {
         long long now = get_time_ms();
         // Block until first client is received. Then block until head of queue should receive data
         int timeout = (client_queue.head) ? client_queue.head->send_next - now : -1;
-        if (timeout < 0) timeout = 0;
+        // if (timeout < 0) timeout = 0;
 
         int poll_result = poll(&fds, 1, timeout);
         if (poll_result < 0) {
@@ -170,6 +170,7 @@ int main() {
 
             int option_index = rand() % num_options;
             ssize_t out = write(c->fd, negotiations[option_index], sizeof(negotiations[option_index]));
+            printf("sent random negotion with index %d\n", option_index);
 
             if (out == -1) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
