@@ -12,11 +12,11 @@
 #include <signal.h>
 #include <syslog.h>
 #include <time.h>
-// #include <linux/time.h>
 
 #define PORT 23
 #define MAX_CLIENTS 4096
 #define DELAY_MS 100
+#define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
 
 #define IAC 255
 #define DO 253
@@ -89,23 +89,8 @@ struct client *queue_pop(struct queue *q) {
     return c;
 }
 
-void initAlarmTimer() {
-    struct itimerval timer;
-
-    // interval
-    timer.it_interval.tv_sec = 5;
-    timer.it_interval.tv_usec = 0;
-
-    // intial
-    timer.it_value.tv_sec = 5;
-    timer.it_value.tv_usec = 0;
-
-    setitimer(ITIMER_REAL, &timer, NULL); // Delivers SIGALRM event periodically
-}
-
-void heartbeat_log(int signo) {
-    (void)signo;
-    syslog(LOG_INFO, "Heartbeat: Server is running with %d connected clients.", clientQueue.length);
+void heartbeat_log() {
+    syslog(LOG_INFO, "Server is running with %d connected clients.", clientQueue.length);
     syslog(LOG_INFO, "Current statistics: wasted time: %lld ms. Total connected clients: %ld", stats.totalWastedTime, stats.totalConnects);
 }
 
@@ -157,9 +142,7 @@ int main() {
     openlog("telnet_tarpit", LOG_PID | LOG_CONS, LOG_USER);
     stats.totalConnects = 0;
     stats.totalWastedTime = 0;
-    initAlarmTimer();
-    signal(SIGPIPE, SIG_IGN);
-    signal(SIGALRM, heartbeat_log);
+    signal(SIGPIPE, SIG_IGN); // Ignore 
     queue_init(&clientQueue);
     
     int serverSock = create_server(PORT);
@@ -170,35 +153,38 @@ int main() {
     
     struct sockaddr_in clientAddr;
     socklen_t addrLen = sizeof(clientAddr);
-
     
     struct pollfd fds;
     memset(&fds, 0, sizeof(fds));
     fds.fd = serverSock;
     fds.events = POLLIN;
     
+    long long lastHeartbeat = currentTimeMs();
     while (1) {
         long long now = currentTimeMs();
         int timeout = -1;
+
+        if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
+            heartbeat_log();
+            lastHeartbeat = now;
+        }
 
         // Process clients in queue
         while (clientQueue.head) {
             if(clientQueue.head->sendNext <= now){
                 struct client *c = queue_pop(&clientQueue);
-                // if (!c) continue;
                 
                 int optionIndex = rand() % num_options;
                 ssize_t out = write(c->fd, negotiations[optionIndex], sizeof(negotiations[optionIndex]));
-                // printf("sent random negotion with index %d\n", optionIndex);
                 
                 if (out <= 0) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) { // Avoid blocking
                         c->sendNext = now + DELAY_MS;
                         c->timeConnected += DELAY_MS;
+                        stats.totalWastedTime += DELAY_MS;
                         queue_append(&clientQueue, c);
                     } else {
                         long long timeTrapped = c->timeConnected;
-                        stats.totalWastedTime += timeTrapped;
                         syslog(LOG_INFO, "Client disconnected from IP: %s:%d with fd: %d with time %lld", 
                             c->ipaddr, c->port, c->fd, timeTrapped);
                         close(c->fd);
@@ -207,6 +193,7 @@ int main() {
                 } else {
                     c->sendNext = now + DELAY_MS;
                     c->timeConnected += DELAY_MS;
+                    stats.totalWastedTime += DELAY_MS;
                     queue_append(&clientQueue, c);
                 }
             } else {
@@ -217,11 +204,9 @@ int main() {
         
         int pollResult = poll(&fds, 1, timeout);
         if (pollResult < 0) {
-            syslog(LOG_ERR, "Poll error");
+            syslog(LOG_ERR, "Poll error with error %s", strerror(errno));
             continue;
         }
-
-        // printf("Number of connected clients: %d\n", clientQueue.length);
 
         // Accept new connections
         if (fds.revents & POLLIN) {
@@ -244,10 +229,9 @@ int main() {
                 queue_append(&clientQueue, newClient);
 
                 syslog(LOG_INFO,"Accepted connection from %s:%d\n",
-                       inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
+                    inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
             }
         }
-
     }
 
     closelog();
