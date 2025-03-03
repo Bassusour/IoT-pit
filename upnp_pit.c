@@ -12,9 +12,61 @@
 #define HTTP_PORT 8080
 #define SSDP_MULTICAST "239.255.255.250"
 
-const char *FAKE_SSDP_RESPONSE = "fake ssdp response";
-const char *FAKE_SUBSCRIBE_RESPONSE = "fake subscribe response";
-const char *FAKE_DEVICE_DESCRIPTION = "fake description response";
+const char *FAKE_SSDP_RESPONSE =
+    "HTTP/1.1 200 OK\r\n"
+    "CACHE-CONTROL: max-age=1800\r\n"
+    "EXT:\r\n"
+    "LOCATION: http://192.168.1.250:8080/hue-device.xml\r\n"
+    "SERVER: Linux/3.14 UPnP/1.0 PhilipsHue/2.1\r\n"
+    "ST: urn:schemas-upnp-org:device:Basic:1\r\n"
+    "USN: uuid:bd752e88-91a9-49e4-8297-8433e05d1c22::urn:schemas-upnp-org:device:Basic:1\r\n"
+    "\r\n";
+
+// Corrected Fake CallStranger UPnP SUBSCRIBE Response
+const char *FAKE_SUBSCRIBE_RESPONSE =
+    "HTTP/1.1 200 OK\r\n"
+    "SID: uuid:f28cb6c3-d723-4e28-8b22-92f570a80fd9\r\n"
+    "TIMEOUT: Second-3600\r\n"
+    "\r\n";
+
+// Corrected Fake Philips Hue Bulb Device Description (XML)
+const char *FAKE_DEVICE_DESCRIPTION =
+    "<?xml version=\"1.0\"?>\n"
+    "<root xmlns=\"urn:schemas-upnp-org:device-1-0\">\n"
+    "  <specVersion>\n"
+    "    <major>1</major>\n"
+    "    <minor>0</minor>\n"
+    "  </specVersion>\n"
+    "  <device>\n"
+    "    <deviceType>urn:schemas-upnp-org:device:Basic:1</deviceType>\n"
+    "    <friendlyName>Philips Hue Smart Bulb</friendlyName>\n"
+    "    <manufacturer>Philips</manufacturer>\n"
+    "    <manufacturerURL>https://www.philips-hue.com</manufacturerURL>\n"
+    "    <modelDescription>Philips Hue A19 White and Color Ambiance</modelDescription>\n"
+    "    <modelName>Hue A19</modelName>\n"
+    "    <modelNumber>9290012573A</modelNumber>\n"
+    "    <modelURL>https://www.philips-hue.com/en-us/p/hue-white-and-color-ambiance-a19</modelURL>\n"
+    "    <serialNumber>PHL-00256739</serialNumber>\n"
+    "    <UDN>uuid:31c79c6d-7d92-4bbf-bf72-5b68591e1731</UDN>\n"
+    "    <serviceList>\n"
+    "      <service>\n"
+    "        <serviceType>urn:schemas-upnp-org:service:SwitchPower:1</serviceType>\n"
+    "        <serviceId>urn:upnp-org:serviceId:SwitchPower</serviceId>\n"
+    "        <controlURL>/hue_control</controlURL>\n"
+    "        <eventSubURL>/hue_event</eventSubURL>\n"
+    "        <SCPDURL>/hue_service.xml</SCPDURL>\n"
+    "      </service>\n"
+    "      <service>\n"
+    "        <serviceType>urn:schemas-upnp-org:service:Dimming:1</serviceType>\n"
+    "        <serviceId>urn:upnp-org:serviceId:Dimming</serviceId>\n"
+    "        <controlURL>/dimming_control</controlURL>\n"
+    "        <eventSubURL>/dimming_event</eventSubURL>\n"
+    "        <SCPDURL>/dimming_service.xml</SCPDURL>\n"
+    "      </service>\n"
+    "    </serviceList>\n"
+    "    <presentationURL>http://192.168.1.250:8080</presentationURL>\n"
+    "  </device>\n"
+    "</root>\n";
 
 // Handles SSDP discovery requests and sends fake responses
 void *ssdpListener(void *arg) {
@@ -113,6 +165,7 @@ void *httpServer(void *arg) {
 }
 
 int main() {
+    openlog("upnp_tarpit", LOG_PID | LOG_CONS, LOG_USER);
     pthread_t ssdpThread, httpThread;
     pthread_create(&ssdpThread, NULL, ssdpListener, NULL);
     pthread_create(&httpThread, NULL, httpServer, NULL);
