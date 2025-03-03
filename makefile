@@ -1,16 +1,28 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -g
-TARGET = telnet_pit
+CFLAGS = -Wall -Wextra -g -pthread
 
-all: $(TARGET)
+TELNET_TARGET = telnet_pit
+UPNP_TARGET = upnp_pit
 
-$(TARGET): telnet_pit.c
-	$(CC) $(CFLAGS) -o $(TARGET) telnet_pit.c
+TELNET_SRC = telnet_pit.c
+UPNP_SRC = upnp_pit.c
+
+# Default Rule: Compile both programs
+all: $(TELNET_TARGET) $(UPNP_TARGET)
+
+$(TELNET_TARGET): $(TELNET_SRC)
+	$(CC) $(CFLAGS) -o $(TELNET_TARGET) $(TELNET_SRC)
+
+$(UPNP_TARGET): $(UPNP_SRC)
+	$(CC) $(CFLAGS) -o $(UPNP_TARGET) $(UPNP_SRC)
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TELNET_TARGET) $(UPNP_TARGET)
 
-run: all
-	./$(TARGET)
+run_telnet: $(TELNET_TARGET)
+	./$(TELNET_TARGET)
 
-.PHONY: all clean run
+run_upnp: $(UPNP_TARGET)
+	./$(UPNP_TARGET)
+
+.PHONY: all clean run_telnet run_upnp
