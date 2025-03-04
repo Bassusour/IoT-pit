@@ -1,0 +1,89 @@
+#include "structs.h"
+#include <stdlib.h>
+#include <syslog.h>
+#include <errno.h>
+#include <unistd.h>
+#include <limits.h>
+#include <time.h>
+
+struct queue clientQueueTelnet;
+struct queue clientQueueUpnp;
+struct statistics statsTelnet;
+struct statistics statsUpnp;
+
+void queue_init(struct queue *q) {
+    q->head = q->tail = NULL;
+    q->length = 0;
+}
+
+void queue_append(struct queue *q, struct client *c) {
+    c->next = NULL;
+    if (q->tail != NULL) {
+        q->tail->next = c;
+    } else {
+        q->head = c;
+    }
+    q->tail = c;
+    q->length++;
+}
+
+struct client *queue_pop(struct queue *q) {
+    if (q->head == NULL) return NULL;
+    struct client *c = q->head;
+    q->head = c->next;
+    if (!q->head) {
+        q->tail = NULL;
+    }
+    q->length--;
+    return c;
+}
+
+int createServer(int port) {
+    int r; 
+    int sockfd;
+    int value;
+
+    // IPv4 TCP socket
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd == -1) {
+        syslog(LOG_ERR,"Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Enable SO_REUSEADDR for faster restarts
+    value = 1;
+    r = setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value));
+    if (r == -1) {
+        syslog(LOG_ERR,"setsockopt failed");
+    }
+
+    // Bind to IPv4 address and port
+    struct sockaddr_in addr4 = {
+        .sin_family = AF_INET,
+        .sin_port = htons(port),
+        .sin_addr = {INADDR_ANY}
+    };
+    r = bind(sockfd, (struct sockaddr *)&addr4, sizeof(addr4));
+    if (r == -1) {
+        syslog(LOG_ERR,"Bind failed");
+        close(sockfd);
+        exit(EXIT_FAILURE);
+    }
+
+    // Listen with a very large backlog
+    r = listen(sockfd, INT_MAX);
+    if (r == -1) {
+        syslog(LOG_ERR,"Listen failed");
+        close(sockfd);
+        exit(EXIT_FAILURE);
+    }
+
+    syslog(LOG_INFO,"Server listening on port %d...\n", port);
+    return sockfd;
+}
+
+long long currentTimeMs() {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
+}

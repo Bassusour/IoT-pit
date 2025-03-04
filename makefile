@@ -1,6 +1,8 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g -pthread
 
+STRUCTS = structs.c
+
 TELNET_TARGET = telnet_pit
 UPNP_TARGET = upnp_pit
 
@@ -11,10 +13,10 @@ UPNP_SRC = upnp_pit.c
 all: $(TELNET_TARGET) $(UPNP_TARGET)
 
 $(TELNET_TARGET): $(TELNET_SRC)
-	$(CC) $(CFLAGS) -o $(TELNET_TARGET) $(TELNET_SRC)
+	$(CC) $(CFLAGS) -o $(TELNET_TARGET) $(TELNET_SRC) $(STRUCTS)
 
 $(UPNP_TARGET): $(UPNP_SRC)
-	$(CC) $(CFLAGS) -o $(UPNP_TARGET) $(UPNP_SRC)
+	$(CC) $(CFLAGS) -o $(UPNP_TARGET) $(UPNP_SRC) $(STRUCTS)
 
 clean:
 	rm -f $(TELNET_TARGET) $(UPNP_TARGET)

@@ -12,6 +12,7 @@
 #include <signal.h>
 #include <syslog.h>
 #include <time.h>
+#include "structs.h"
 
 #define PORT 23
 #define MAX_CLIENTS 4096
@@ -35,117 +36,19 @@ unsigned char negotiations[][3] = {
 };
 int num_options = sizeof(negotiations) / sizeof(negotiations[0]);
 
-struct client {
-    int fd;
-    long long sendNext;
-    struct client *next;
-    long long timeConnected;
-    char ipaddr[INET6_ADDRSTRLEN];
-    int port;
-};
-
-// queue for the order of clients in descending order of sendNext
-struct queue {
-    struct client *head;
-    struct client *tail;
-    int length;
-} clientQueue;
-
-struct statistics {
-    long totalConnects;
-    long long totalWastedTime;
-} stats;
-
-long long currentTimeMs() {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
-}
-
-void queue_init(struct queue *q) {
-    q->head = q->tail = NULL;
-    q->length = 0;
-}
-
-void queue_append(struct queue *q, struct client *c) {
-    c->next = NULL;
-    if (q->tail != NULL) {
-        q->tail->next = c;
-    } else {
-        q->head = c;
-    }
-    q->tail = c;
-    q->length++;
-}
-
-struct client *queue_pop(struct queue *q) {
-    if (q->head == NULL) return NULL;
-    struct client *c = q->head;
-    q->head = c->next;
-    if (!q->head) {
-        q->tail = NULL;
-    }
-    q->length--;
-    return c;
-}
-
 void heartbeat_log() {
-    syslog(LOG_INFO, "Server is running with %d connected clients.", clientQueue.length);
-    syslog(LOG_INFO, "Current statistics: wasted time: %lld ms. Total connected clients: %ld", stats.totalWastedTime, stats.totalConnects);
-}
-
-int create_server(int port) {
-    int r; 
-    int sockfd;
-    int value;
-
-    // IPv4 TCP socket
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd == -1) {
-        syslog(LOG_ERR,"Socket creation failed");
-        exit(EXIT_FAILURE);
-    }
-
-    // Enable SO_REUSEADDR for faster restarts
-    value = 1;
-    r = setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value));
-    if (r == -1) {
-        syslog(LOG_ERR,"setsockopt failed");
-    }
-
-    // Bind to IPv4 address and port
-    struct sockaddr_in addr4 = {
-        .sin_family = AF_INET,
-        .sin_port = htons(port),
-        .sin_addr = {INADDR_ANY}
-    };
-    r = bind(sockfd, (struct sockaddr *)&addr4, sizeof(addr4));
-    if (r == -1) {
-        syslog(LOG_ERR,"Bind failed");
-        close(sockfd);
-        exit(EXIT_FAILURE);
-    }
-
-    // Listen with a very large backlog (INT_MAX) to handle massive bot traffic
-    r = listen(sockfd, INT_MAX);
-    if (r == -1) {
-        syslog(LOG_ERR,"Listen failed");
-        close(sockfd);
-        exit(EXIT_FAILURE);
-    }
-
-    syslog(LOG_INFO,"Telnet tarpit listening on port %d...\n", port);
-    return sockfd;
+    syslog(LOG_INFO, "Server is running with %d connected clients.", clientQueueTelnet.length);
+    syslog(LOG_INFO, "Current statistics: wasted time: %lld ms. Total connected clients: %ld", statsTelnet.totalWastedTime, statsTelnet.totalConnects);
 }
 
 int main() {
     openlog("telnet_tarpit", LOG_PID | LOG_CONS, LOG_USER);
-    stats.totalConnects = 0;
-    stats.totalWastedTime = 0;
+    statsTelnet.totalConnects = 0;
+    statsTelnet.totalWastedTime = 0;
     signal(SIGPIPE, SIG_IGN); // Ignore 
-    queue_init(&clientQueue);
+    queue_init(&clientQueueTelnet);
     
-    int serverSock = create_server(PORT);
+    int serverSock = createServer(PORT);
     if (serverSock < 0) {
         syslog(LOG_ERR, "Invalid server socket fd: %d", serverSock);
         exit(EXIT_FAILURE);
@@ -170,9 +73,9 @@ int main() {
         }
 
         // Process clients in queue
-        while (clientQueue.head) {
-            if(clientQueue.head->sendNext <= now){
-                struct client *c = queue_pop(&clientQueue);
+        while (clientQueueTelnet.head) {
+            if(clientQueueTelnet.head->sendNext <= now){
+                struct client *c = queue_pop(&clientQueueTelnet);
                 
                 int optionIndex = rand() % num_options;
                 ssize_t out = write(c->fd, negotiations[optionIndex], sizeof(negotiations[optionIndex]));
@@ -181,8 +84,8 @@ int main() {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) { // Avoid blocking
                         c->sendNext = now + DELAY_MS;
                         c->timeConnected += DELAY_MS;
-                        stats.totalWastedTime += DELAY_MS;
-                        queue_append(&clientQueue, c);
+                        statsTelnet.totalWastedTime += DELAY_MS;
+                        queue_append(&clientQueueTelnet, c);
                     } else {
                         long long timeTrapped = c->timeConnected;
                         syslog(LOG_INFO, "Client disconnected from IP: %s:%d with fd: %d with time %lld", 
@@ -193,11 +96,11 @@ int main() {
                 } else {
                     c->sendNext = now + DELAY_MS;
                     c->timeConnected += DELAY_MS;
-                    stats.totalWastedTime += DELAY_MS;
-                    queue_append(&clientQueue, c);
+                    statsTelnet.totalWastedTime += DELAY_MS;
+                    queue_append(&clientQueueTelnet, c);
                 }
             } else {
-                timeout = clientQueue.head->sendNext - now;
+                timeout = clientQueueTelnet.head->sendNext - now;
                 break;
             }
         }
@@ -213,20 +116,20 @@ int main() {
             int clientFd = accept(serverSock, (struct sockaddr *)&clientAddr, &addrLen);
             if (clientFd >= 0) {
                 fcntl(clientFd, F_SETFL, O_NONBLOCK); // Set non-blocking mode
-                struct client *newClient = malloc(sizeof(struct client));
+                struct client* newClient = malloc(sizeof(struct client));
                 if (!newClient) {
                     syslog(LOG_ERR, "Out of memory");
                     close(clientFd);
                     continue;
                 }
 
-                stats.totalConnects += 1;
+                statsTelnet.totalConnects += 1;
                 newClient->fd = clientFd;
                 newClient->sendNext = now + DELAY_MS;
                 newClient->timeConnected = 0;
                 strncpy(newClient->ipaddr, inet_ntoa(clientAddr.sin_addr), INET6_ADDRSTRLEN);
                 newClient->port = ntohs(clientAddr.sin_port);
-                queue_append(&clientQueue, newClient);
+                queue_append(&clientQueueTelnet, newClient);
 
                 syslog(LOG_INFO,"Accepted connection from %s:%d\n",
                     inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));

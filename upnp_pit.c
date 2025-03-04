@@ -7,29 +7,30 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <syslog.h>
+#include <poll.h>
+#include <errno.h>
+#include <fcntl.h>
+#include "structs.h"
 
 #define SSDP_PORT 1900
 #define HTTP_PORT 8080
+#define DELAY_MS 100
 #define SSDP_MULTICAST "239.255.255.250"
 
+// Allowed to be seperated into packets for up to 5 seconds. (1.3.3 Search response from specifications)
+// Is UDP
 const char *FAKE_SSDP_RESPONSE =
     "HTTP/1.1 200 OK\r\n"
     "CACHE-CONTROL: max-age=1800\r\n"
     "EXT:\r\n"
-    "LOCATION: http://192.168.1.250:8080/hue-device.xml\r\n"
+    "LOCATION: http://127.0.0.1:8080/hue-device.xml\r\n" //TODO: Use actual IP address
     "SERVER: Linux/3.14 UPnP/1.0 PhilipsHue/2.1\r\n"
     "ST: urn:schemas-upnp-org:device:Basic:1\r\n"
     "USN: uuid:bd752e88-91a9-49e4-8297-8433e05d1c22::urn:schemas-upnp-org:device:Basic:1\r\n"
     "\r\n";
-
-// Corrected Fake CallStranger UPnP SUBSCRIBE Response
-const char *FAKE_SUBSCRIBE_RESPONSE =
-    "HTTP/1.1 200 OK\r\n"
-    "SID: uuid:f28cb6c3-d723-4e28-8b22-92f570a80fd9\r\n"
-    "TIMEOUT: Second-3600\r\n"
-    "\r\n";
-
-// Corrected Fake Philips Hue Bulb Device Description (XML)
+    
+    
+// Can use Chunked Transfer Coding from rfc 2616 section 3.6.1
 const char *FAKE_DEVICE_DESCRIPTION =
     "<?xml version=\"1.0\"?>\n"
     "<root xmlns=\"urn:schemas-upnp-org:device-1-0\">\n"
@@ -48,28 +49,20 @@ const char *FAKE_DEVICE_DESCRIPTION =
     "    <modelURL>https://www.philips-hue.com/en-us/p/hue-white-and-color-ambiance-a19</modelURL>\n"
     "    <serialNumber>PHL-00256739</serialNumber>\n"
     "    <UDN>uuid:31c79c6d-7d92-4bbf-bf72-5b68591e1731</UDN>\n"
-    "    <serviceList>\n"
+    "    <serviceList>\n";
+
+const char *FAKE_CHUNK =
     "      <service>\n"
     "        <serviceType>urn:schemas-upnp-org:service:SwitchPower:1</serviceType>\n"
     "        <serviceId>urn:upnp-org:serviceId:SwitchPower</serviceId>\n"
     "        <controlURL>/hue_control</controlURL>\n"
     "        <eventSubURL>/hue_event</eventSubURL>\n"
     "        <SCPDURL>/hue_service.xml</SCPDURL>\n"
-    "      </service>\n"
-    "      <service>\n"
-    "        <serviceType>urn:schemas-upnp-org:service:Dimming:1</serviceType>\n"
-    "        <serviceId>urn:upnp-org:serviceId:Dimming</serviceId>\n"
-    "        <controlURL>/dimming_control</controlURL>\n"
-    "        <eventSubURL>/dimming_event</eventSubURL>\n"
-    "        <SCPDURL>/dimming_service.xml</SCPDURL>\n"
-    "      </service>\n"
-    "    </serviceList>\n"
-    "    <presentationURL>http://192.168.1.250:8080</presentationURL>\n"
-    "  </device>\n"
-    "</root>\n";
+    "      </service>\n";
 
 // Handles SSDP discovery requests and sends fake responses
 void *ssdpListener(void *arg) {
+    (void)arg;
     int sock;
     struct sockaddr_in serverAddr, client_addr;
     socklen_t addrLen = sizeof(client_addr);
@@ -84,7 +77,7 @@ void *ssdpListener(void *arg) {
     // Bind to SSDP multicast address
     memset(&serverAddr, 0, sizeof(serverAddr));
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    serverAddr.sin_addr.s_addr = inet_addr("192.168.1.250");
     serverAddr.sin_port = htons(SSDP_PORT);
 
     if (bind(sock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
@@ -93,7 +86,7 @@ void *ssdpListener(void *arg) {
         return NULL;
     }
 
-    syslog(LOG_INFO, "UPnP SSDP tarpit started on port %d\n", SSDP_PORT);
+    syslog(LOG_INFO, "UPnP listener started on port %d\n", SSDP_PORT);
 
     while (1) {
         memset(buffer, 0, sizeof(buffer));
@@ -104,6 +97,7 @@ void *ssdpListener(void *arg) {
             continue;
         }
 
+        // Ignore all requests that are not discovery
         if (strstr(buffer, "M-SEARCH") != NULL) {
             char client_ip[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
@@ -120,47 +114,109 @@ void *ssdpListener(void *arg) {
 }
 
 void *httpServer(void *arg) {
-    int serverFd, clientFd;
-    struct sockaddr_in serverAddr, client_addr;
-    socklen_t addrLen = sizeof(client_addr);
-    char buffer[1024];
-
-    serverFd = socket(AF_INET, SOCK_STREAM, 0);
-    if (serverFd == -1) {
-        syslog(LOG_ERR, "HTTP Socket creation failed");
-        return NULL;
+    (void)arg;
+    int serverSock = createServer(HTTP_PORT);
+    if (serverSock < 0) {
+        syslog(LOG_ERR, "Invalid server socket fd: %d", serverSock);
+        exit(EXIT_FAILURE);
     }
 
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    serverAddr.sin_port = htons(HTTP_PORT);
+    struct sockaddr_in clientAddr;
+    socklen_t addrLen = sizeof(clientAddr);
+    
+    struct pollfd fds;
+    memset(&fds, 0, sizeof(fds));
+    fds.fd = serverSock;
+    fds.events = POLLIN;
 
-    if (bind(serverFd, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
-        syslog(LOG_ERR, "HTTP Bind failed");
-        close(serverFd);
-        return NULL;
-    }
+    while (1){
+        long long now = currentTimeMs();
+        int timeout = -1;
 
-    listen(serverFd, 5);
-    syslog(LOG_INFO, "Fake UPnP HTTP Server started on port %d\n", HTTP_PORT);
+        while (clientQueueUpnp.head) {
+            if(clientQueueUpnp.head->sendNext <= now){
+                struct client *c = queue_pop(&clientQueueUpnp);
+                
+                char chunk_size[10];
+                snprintf(chunk_size, sizeof(chunk_size), "%X\r\n", (int)strlen(FAKE_CHUNK));
+                write(c->fd, chunk_size, sizeof(chunk_size));
+                write(c->fd, FAKE_CHUNK, strlen(FAKE_CHUNK));
+                ssize_t out = write(c->fd, "\r\n", 2);
 
-    while (1) {
-        clientFd = accept(serverFd, (struct sockaddr *)&client_addr, &addrLen);
-        if (clientFd < 0) continue;
-
-        read(clientFd, buffer, sizeof(buffer));
-        write(clientFd, "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\n\r\n", 46);
-
-        if (strstr(buffer, "SUBSCRIBE")) {
-            write(clientFd, FAKE_SUBSCRIBE_RESPONSE, strlen(FAKE_SUBSCRIBE_RESPONSE));
-        } else {
-            write(clientFd, FAKE_DEVICE_DESCRIPTION, strlen(FAKE_DEVICE_DESCRIPTION));
+                if (out <= 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) { // Avoid blocking
+                        c->sendNext = now + DELAY_MS;
+                        c->timeConnected += DELAY_MS;
+                        statsTelnet.totalWastedTime += DELAY_MS;
+                        queue_append(&clientQueueUpnp, c);
+                    } else {
+                        long long timeTrapped = c->timeConnected;
+                        syslog(LOG_INFO, "Client disconnected from IP: %s:%d with fd: %d with time %lld", 
+                            c->ipaddr, c->port, c->fd, timeTrapped);
+                        close(c->fd);
+                        free(c);
+                    }
+                } else {
+                    c->sendNext = now + DELAY_MS;
+                    c->timeConnected += DELAY_MS;
+                    statsTelnet.totalWastedTime += DELAY_MS;
+                    queue_append(&clientQueueUpnp, c);
+                }
+            } else {
+                timeout = clientQueueTelnet.head->sendNext - now;
+                break;
+            }
         }
 
-        close(clientFd);
+        int pollResult = poll(&fds, 1, timeout);
+        if (pollResult < 0) {
+            syslog(LOG_ERR, "Poll error with error %s", strerror(errno));
+            continue;
+        }
+
+        // Accept new connections
+        if (fds.revents & POLLIN) {
+            int clientFd = accept(serverSock, (struct sockaddr *)&clientAddr, &addrLen);
+            if (clientFd >= 0) {
+                fcntl(clientFd, F_SETFL, O_NONBLOCK); // Set non-blocking mode
+                struct client* newClient = malloc(sizeof(struct client));
+                if (!newClient) {
+                    syslog(LOG_ERR, "Out of memory");
+                    free(newClient);
+                    close(clientFd);
+                    continue;
+                }
+
+                char response_header[] =
+                    "HTTP/1.1 200 OK\r\n"
+                    "Transfer-Encoding: chunked\r\n"
+                    "Trailer: X-Checksum\r\n"
+                    "\r\n";
+                
+                ssize_t out = write(clientFd, response_header, strlen(response_header));
+                if(out <= 0){
+                    syslog(LOG_ERR, "failed to write response header to %s:%d\n", 
+                        inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
+                    close(clientFd);
+                    continue;
+                }
+
+                statsTelnet.totalConnects += 1;
+                newClient->fd = clientFd;
+                newClient->sendNext = now + DELAY_MS;
+                newClient->timeConnected = 0;
+                strncpy(newClient->ipaddr, inet_ntoa(clientAddr.sin_addr), INET6_ADDRSTRLEN);
+                newClient->port = ntohs(clientAddr.sin_port);
+                queue_append(&clientQueueTelnet, newClient);
+
+                syslog(LOG_INFO,"Accepted connection from %s:%d\n",
+                    inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
+            }
+        }
     }
 
-    close(serverFd);
+    closelog();
+    close(serverSock);
     return NULL;
 }
 
