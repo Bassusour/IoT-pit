@@ -10,25 +10,13 @@
 #include <poll.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include "structs.h"
 
 #define SSDP_PORT 1900
 #define HTTP_PORT 8080
 #define DELAY_MS 100
 #define SSDP_MULTICAST "239.255.255.250"
-
-// Allowed to be seperated into packets for up to 5 seconds. (1.3.3 Search response from specifications)
-// Is UDP
-const char *FAKE_SSDP_RESPONSE =
-    "HTTP/1.1 200 OK\r\n"
-    "CACHE-CONTROL: max-age=1800\r\n"
-    "EXT:\r\n"
-    "LOCATION: http://127.0.0.1:8080/hue-device.xml\r\n" //TODO: Use actual IP address
-    "SERVER: Linux/3.14 UPnP/1.0 PhilipsHue/2.1\r\n"
-    "ST: urn:schemas-upnp-org:device:Basic:1\r\n"
-    "USN: uuid:bd752e88-91a9-49e4-8297-8433e05d1c22::urn:schemas-upnp-org:device:Basic:1\r\n"
-    "\r\n";
-    
     
 // Can use Chunked Transfer Coding from rfc 2616 section 3.6.1
 const char *FAKE_DEVICE_DESCRIPTION =
@@ -60,30 +48,69 @@ const char *FAKE_CHUNK =
     "        <SCPDURL>/hue_service.xml</SCPDURL>\n"
     "      </service>\n";
 
+char* getLocalIpAddress(){
+    char hostbuffer[256];
+    struct hostent *hostEntry;
+    gethostname(hostbuffer, sizeof(hostbuffer));
+    hostEntry = gethostbyname(hostbuffer);
+    if(hostEntry == NULL){
+        syslog(LOG_ERR, "Failed getting hostname");
+        exit(EXIT_FAILURE);
+    }
+    char *ipAddress = inet_ntoa(*((struct in_addr*)
+                        hostEntry->h_addr_list[0]));
+
+    return ipAddress;
+    // printf("Hostname: %s\n", hostbuffer);
+    // printf("Host IP: %s\n", ipAddress);
+}
+
+char* buildSsdpResponse() {
+    char *ipAddress = getLocalIpAddress();
+
+    // Allowed to be seperated into packets for up to 5 seconds. (1.3.3 Search response from specifications)
+    char *responseBuffer = (char*) malloc((512)*sizeof(char));
+    snprintf(responseBuffer, 512,
+        "HTTP/1.1 200 OK\r\n"
+        "CACHE-CONTROL: max-age=1800\r\n"
+        "EXT:\r\n"
+        "LOCATION: http://%s:%d/hue-device.xml\r\n"
+        "SERVER: Linux/3.14 UPnP/1.0 PhilipsHue/2.1\r\n"
+        "ST: urn:schemas-upnp-org:device:Basic:1\r\n"
+        "USN: uuid:bd752e88-91a9-49e4-8297-8433e05d1c22::urn:schemas-upnp-org:device:Basic:1\r\n"
+        "\r\n", ipAddress, HTTP_PORT);
+    return responseBuffer;
+}
+
 // Handles SSDP discovery requests and sends fake responses
 void *ssdpListener(void *arg) {
     (void)arg;
-    int sock;
+    char* response = buildSsdpResponse();
+    int sockFd;
     struct sockaddr_in serverAddr, client_addr;
     socklen_t addrLen = sizeof(client_addr);
     char buffer[1024];
 
+    printf("response: \n %s", response);
+
+    // Create raw socket to inspect/set headers manually
+    // if ((sockFd = socket(AF_INET, SOCK_RAW, IPPROTO_UDP)) < 0) {
     // Create UDP socket
-    if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+    if ((sockFd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) { // works
         syslog(LOG_ERR, "SSDP Socket creation failed");
-        return NULL;
+        exit(EXIT_FAILURE);
     }
 
     // Bind to SSDP multicast address
     memset(&serverAddr, 0, sizeof(serverAddr));
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = inet_addr("192.168.1.250");
+    serverAddr.sin_addr.s_addr = INADDR_ANY; // Debugging
     serverAddr.sin_port = htons(SSDP_PORT);
 
-    if (bind(sock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
+    if (bind(sockFd, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
         syslog(LOG_ERR, "SSDP Bind failed");
-        close(sock);
-        return NULL;
+        close(sockFd);
+        exit(EXIT_FAILURE);
     }
 
     syslog(LOG_INFO, "UPnP listener started on port %d\n", SSDP_PORT);
@@ -91,25 +118,28 @@ void *ssdpListener(void *arg) {
     while (1) {
         memset(buffer, 0, sizeof(buffer));
 
-        if (recvfrom(sock, buffer, sizeof(buffer), 0,
-                     (struct sockaddr *)&client_addr, &addrLen) < 0) {
+        if (recvfrom(sockFd, buffer, sizeof(buffer), 0,
+                     (struct sockaddr *)&client_addr, &addrLen) <= 0) {
             syslog(LOG_ERR, "Error receiving SSDP request");
             continue;
         }
 
+        // printf("received %s", buffer);
+
         // Ignore all requests that are not discovery
         if (strstr(buffer, "M-SEARCH") != NULL) {
+            // if(strstr(buffer, "")) // Check header values
             char client_ip[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
             syslog(LOG_INFO, "Received SSDP M-SEARCH request from %s\n", client_ip);
-
-            sendto(sock, FAKE_SSDP_RESPONSE, strlen(FAKE_SSDP_RESPONSE), 0,
-                   (struct sockaddr *)&client_addr, sizeof(client_addr));
+            sendto(sockFd, response, strlen(response), 0,
+                (struct sockaddr *)&client_addr, sizeof(client_addr));
             syslog(LOG_INFO, "Sent fake SSDP response to %s\n", client_ip);
         }
     }
 
-    close(sock);
+    free(response);
+    close(sockFd);
     return NULL;
 }
 
@@ -139,7 +169,7 @@ void *httpServer(void *arg) {
                 
                 char chunk_size[10];
                 snprintf(chunk_size, sizeof(chunk_size), "%X\r\n", (int)strlen(FAKE_CHUNK));
-                write(c->fd, chunk_size, sizeof(chunk_size));
+                write(c->fd, chunk_size, sizeof(chunk_size)); // maybe strlen is better
                 write(c->fd, FAKE_CHUNK, strlen(FAKE_CHUNK));
                 ssize_t out = write(c->fd, "\r\n", 2);
 
@@ -180,37 +210,53 @@ void *httpServer(void *arg) {
             if (clientFd >= 0) {
                 fcntl(clientFd, F_SETFL, O_NONBLOCK); // Set non-blocking mode
                 struct client* newClient = malloc(sizeof(struct client));
-                if (!newClient) {
+                if (newClient == NULL) {
                     syslog(LOG_ERR, "Out of memory");
+                    close(clientFd);
+                    continue;
+                }
+
+                char buffer[1024];
+                memset(buffer, 0, 1024);
+                read(clientFd, buffer, 1024-1);
+                char method[10], url[256];
+                sscanf(buffer, "%9s %255s", method, url);
+
+                if (strcmp(url, "/hue-device.xml") == 0 && strcmp(method, "GET") == 0) {
+                    char responseHeader[] =
+                        "HTTP/1.1 200 OK\r\n"
+                        "Transfer-Encoding: chunked\r\n"
+                        "Trailer: X-Checksum\r\n"
+                        "\r\n";
+                    
+                    ssize_t out = write(clientFd, responseHeader, strlen(responseHeader));
+                    if(out <= 0){
+                        syslog(LOG_ERR, "failed to write response header to %s:%d\n", 
+                            inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
+                        free(newClient);
+                        close(clientFd);
+                        continue;
+                    }
+
+                    statsTelnet.totalConnects += 1;
+                    newClient->fd = clientFd;
+                    newClient->sendNext = now + DELAY_MS;
+                    newClient->timeConnected = 0;
+                    snprintf(newClient->ipaddr, sizeof(newClient->ipaddr), "%s", inet_ntoa(clientAddr.sin_addr));
+                    newClient->port = ntohs(clientAddr.sin_port);
+                    queue_append(&clientQueueTelnet, newClient);
+
+                    // syslog(LOG_INFO,"Accepted GET request from from %s:%d\n",
+                    //     inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
+                    printf("Accepted GET request from from %s:%d\n",
+                        inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
+                } else {
+                    // syslog(LOG_INFO, "Received %s request with %s url", method, url);
+                    printf("Received %s request with %s url\n", method, url);
                     free(newClient);
                     close(clientFd);
                     continue;
                 }
-
-                char response_header[] =
-                    "HTTP/1.1 200 OK\r\n"
-                    "Transfer-Encoding: chunked\r\n"
-                    "Trailer: X-Checksum\r\n"
-                    "\r\n";
-                
-                ssize_t out = write(clientFd, response_header, strlen(response_header));
-                if(out <= 0){
-                    syslog(LOG_ERR, "failed to write response header to %s:%d\n", 
-                        inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
-                    close(clientFd);
-                    continue;
-                }
-
-                statsTelnet.totalConnects += 1;
-                newClient->fd = clientFd;
-                newClient->sendNext = now + DELAY_MS;
-                newClient->timeConnected = 0;
-                strncpy(newClient->ipaddr, inet_ntoa(clientAddr.sin_addr), INET6_ADDRSTRLEN);
-                newClient->port = ntohs(clientAddr.sin_port);
-                queue_append(&clientQueueTelnet, newClient);
-
-                syslog(LOG_INFO,"Accepted connection from %s:%d\n",
-                    inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
             }
         }
     }
