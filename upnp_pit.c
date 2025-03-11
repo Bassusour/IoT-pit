@@ -11,14 +11,17 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <signal.h>
 #include "structs.h"
 
 #define SSDP_PORT 1900
 #define HTTP_PORT 8080
 #define DELAY_MS 100
 #define SSDP_MULTICAST "239.255.255.250"
+#define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
     
 // Can use Chunked Transfer Coding from rfc 2616 section 3.6.1
+// Required to be a HTTP GET request (Section 2.1 from specifications)
 const char *FAKE_DEVICE_DESCRIPTION =
     "<?xml version=\"1.0\"?>\n"
     "<root xmlns=\"urn:schemas-upnp-org:device-1-0\">\n"
@@ -48,6 +51,11 @@ const char *FAKE_CHUNK =
     "        <SCPDURL>/hue_service.xml</SCPDURL>\n"
     "      </service>\n";
 
+void heartbeatLog() {
+    syslog(LOG_INFO, "Server is running with %d connected clients.", clientQueueUpnp.length);
+    syslog(LOG_INFO, "Current statistics: wasted time: %lld ms. Total connected clients: %ld", statsUpnp.totalWastedTime, statsUpnp.totalConnects);
+}
+
 char* getLocalIpAddress(){
     char hostbuffer[256];
     struct hostent *hostEntry;
@@ -61,14 +69,11 @@ char* getLocalIpAddress(){
                         hostEntry->h_addr_list[0]));
 
     return ipAddress;
-    // printf("Hostname: %s\n", hostbuffer);
-    // printf("Host IP: %s\n", ipAddress);
 }
 
 char* buildSsdpResponse() {
     char *ipAddress = getLocalIpAddress();
 
-    // Allowed to be seperated into packets for up to 5 seconds. (1.3.3 Search response from specifications)
     char *responseBuffer = (char*) malloc((512)*sizeof(char));
     snprintf(responseBuffer, 512,
         "HTTP/1.1 200 OK\r\n"
@@ -91,21 +96,24 @@ void *ssdpListener(void *arg) {
     socklen_t addrLen = sizeof(client_addr);
     char buffer[1024];
 
-    printf("response: \n %s", response);
+    printf("response: %s\n", response);
 
-    // Create raw socket to inspect/set headers manually
-    // if ((sockFd = socket(AF_INET, SOCK_RAW, IPPROTO_UDP)) < 0) {
-    // Create UDP socket
     if ((sockFd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) { // works
         syslog(LOG_ERR, "SSDP Socket creation failed");
         exit(EXIT_FAILURE);
     }
 
-    // Bind to SSDP multicast address
+    // Bind to all interfaces for unicast
     memset(&serverAddr, 0, sizeof(serverAddr));
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY; // Debugging
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
     serverAddr.sin_port = htons(SSDP_PORT);
+
+    // Join the SSDP multicast group
+    struct ip_mreq mreq;
+    mreq.imr_multiaddr.s_addr = inet_addr(SSDP_MULTICAST);
+    mreq.imr_interface.s_addr = INADDR_ANY;
+    setsockopt(sockFd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)); // Maybe IPPROTO_UDP instead
 
     if (bind(sockFd, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
         syslog(LOG_ERR, "SSDP Bind failed");
@@ -124,7 +132,7 @@ void *ssdpListener(void *arg) {
             continue;
         }
 
-        // printf("received %s", buffer);
+        printf("received %s", buffer);
 
         // Ignore all requests that are not discovery
         if (strstr(buffer, "M-SEARCH") != NULL) {
@@ -145,6 +153,8 @@ void *ssdpListener(void *arg) {
 
 void *httpServer(void *arg) {
     (void)arg;
+    signal(SIGPIPE, SIG_IGN);
+    queue_init(&clientQueueUpnp);
     int serverSock = createServer(HTTP_PORT);
     if (serverSock < 0) {
         syslog(LOG_ERR, "Invalid server socket fd: %d", serverSock);
@@ -159,29 +169,39 @@ void *httpServer(void *arg) {
     fds.fd = serverSock;
     fds.events = POLLIN;
 
+    long long lastHeartbeat = currentTimeMs();
     while (1){
         long long now = currentTimeMs();
         int timeout = -1;
 
+        long long res = now - lastHeartbeat;
+
+        if (res >= HEARTBEAT_INTERVAL_MS) {
+            heartbeatLog();
+            lastHeartbeat = now;
+        }
+
         while (clientQueueUpnp.head) {
             if(clientQueueUpnp.head->sendNext <= now){
                 struct client *c = queue_pop(&clientQueueUpnp);
-                
+
                 char chunk_size[10];
                 snprintf(chunk_size, sizeof(chunk_size), "%X\r\n", (int)strlen(FAKE_CHUNK));
-                write(c->fd, chunk_size, sizeof(chunk_size)); // maybe strlen is better
+                write(c->fd, chunk_size, strlen(chunk_size)); // sizeof is too short
                 write(c->fd, FAKE_CHUNK, strlen(FAKE_CHUNK));
                 ssize_t out = write(c->fd, "\r\n", 2);
-
-                if (out <= 0) {
+                
+                if (out == -1) {
+                    printf("Out is %ld with errno %s\n", out, strerror(errno));
                     if (errno == EAGAIN || errno == EWOULDBLOCK) { // Avoid blocking
                         c->sendNext = now + DELAY_MS;
                         c->timeConnected += DELAY_MS;
-                        statsTelnet.totalWastedTime += DELAY_MS;
+                        statsUpnp.totalWastedTime += DELAY_MS;
                         queue_append(&clientQueueUpnp, c);
-                    } else {
+                    } else if (errno == EPIPE) {
+                        printf("Logged disconnect\n");
                         long long timeTrapped = c->timeConnected;
-                        syslog(LOG_INFO, "Client disconnected from IP: %s:%d with fd: %d with time %lld", 
+                        syslog(LOG_INFO, "Client disconnected from IP: %s:%d with fd: %d with time %lld",
                             c->ipaddr, c->port, c->fd, timeTrapped);
                         close(c->fd);
                         free(c);
@@ -189,11 +209,11 @@ void *httpServer(void *arg) {
                 } else {
                     c->sendNext = now + DELAY_MS;
                     c->timeConnected += DELAY_MS;
-                    statsTelnet.totalWastedTime += DELAY_MS;
+                    statsUpnp.totalWastedTime += DELAY_MS;
                     queue_append(&clientQueueUpnp, c);
                 }
             } else {
-                timeout = clientQueueTelnet.head->sendNext - now;
+                timeout = clientQueueUpnp.head->sendNext - now;
                 break;
             }
         }
@@ -233,28 +253,32 @@ void *httpServer(void *arg) {
                     if(out <= 0){
                         syslog(LOG_ERR, "failed to write response header to %s:%d\n", 
                             inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
-                        free(newClient);
                         close(clientFd);
+                        free(newClient);
                         continue;
                     }
 
-                    statsTelnet.totalConnects += 1;
+                    statsUpnp.totalConnects += 1;
                     newClient->fd = clientFd;
                     newClient->sendNext = now + DELAY_MS;
                     newClient->timeConnected = 0;
                     snprintf(newClient->ipaddr, sizeof(newClient->ipaddr), "%s", inet_ntoa(clientAddr.sin_addr));
                     newClient->port = ntohs(clientAddr.sin_port);
-                    queue_append(&clientQueueTelnet, newClient);
+                    queue_append(&clientQueueUpnp, newClient);
 
                     // syslog(LOG_INFO,"Accepted GET request from from %s:%d\n",
                     //     inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
                     printf("Accepted GET request from from %s:%d\n",
                         inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
+                // Ignore requests without a method or url
+                // } else if (strcmp(method, "") == 0 || strcmp(url, "")) {
+                //     continue;
                 } else {
+                    statsUpnp.otherRequests += 1;
                     // syslog(LOG_INFO, "Received %s request with %s url", method, url);
                     printf("Received %s request with %s url\n", method, url);
-                    free(newClient);
                     close(clientFd);
+                    free(newClient);
                     continue;
                 }
             }
@@ -266,8 +290,15 @@ void *httpServer(void *arg) {
     return NULL;
 }
 
+void initializeStats(){
+    statsUpnp.totalConnects = 0;
+    statsUpnp.totalWastedTime = 0;
+    statsUpnp.otherRequests = 0;
+}
+
 int main() {
     openlog("upnp_tarpit", LOG_PID | LOG_CONS, LOG_USER);
+    initializeStats();
     pthread_t ssdpThread, httpThread;
     pthread_create(&ssdpThread, NULL, ssdpListener, NULL);
     pthread_create(&httpThread, NULL, httpServer, NULL);

@@ -8,8 +8,8 @@
 
 struct queue clientQueueTelnet;
 struct queue clientQueueUpnp;
-struct statistics statsTelnet;
-struct statistics statsUpnp;
+struct telnetStatistics statsTelnet;
+struct upnpStatistics statsUpnp;
 
 void queue_init(struct queue *q) {
     q->head = q->tail = NULL;

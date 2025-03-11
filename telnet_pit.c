@@ -36,15 +36,19 @@ unsigned char negotiations[][3] = {
 };
 int num_options = sizeof(negotiations) / sizeof(negotiations[0]);
 
-void heartbeat_log() {
+void heartbeatLog() {
     syslog(LOG_INFO, "Server is running with %d connected clients.", clientQueueTelnet.length);
     syslog(LOG_INFO, "Current statistics: wasted time: %lld ms. Total connected clients: %ld", statsTelnet.totalWastedTime, statsTelnet.totalConnects);
 }
 
-int main() {
-    openlog("telnet_tarpit", LOG_PID | LOG_CONS, LOG_USER);
+void initializeStats(){
     statsTelnet.totalConnects = 0;
     statsTelnet.totalWastedTime = 0;
+}
+
+int main() {
+    openlog("telnet_tarpit", LOG_PID | LOG_CONS, LOG_USER);
+    
     signal(SIGPIPE, SIG_IGN); // Ignore 
     queue_init(&clientQueueTelnet);
     
@@ -68,7 +72,7 @@ int main() {
         int timeout = -1;
 
         if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
-            heartbeat_log();
+            heartbeatLog();
             lastHeartbeat = now;
         }
 

@@ -3,7 +3,6 @@
 
 #include <netinet/in.h>
 
-
 struct client {
     int fd;
     long long sendNext;
@@ -19,19 +18,22 @@ struct queue {
     int length;
 };
 
-// Global queue variable (defined in queue.c)
 extern struct queue clientQueueTelnet;
 extern struct queue clientQueueUpnp;
 
-// Stores statistics
-struct statistics {
-    long totalConnects;
-    long long totalWastedTime;
+struct telnetStatistics {
+    unsigned long totalConnects;
+    unsigned long long totalWastedTime;
 };
 
-// Global statistics variable (defined in queue.c)
-extern struct statistics statsTelnet;
-extern struct statistics statsUpnp;
+struct upnpStatistics {
+    unsigned long totalConnects;
+    unsigned long long totalWastedTime;
+    unsigned long otherRequests;
+};
+
+extern struct telnetStatistics statsTelnet;
+extern struct upnpStatistics statsUpnp;
 
 /**
  * @brief Initializes a queue.
@@ -53,8 +55,16 @@ void queue_append(struct queue *q, struct client *c);
  */
 struct client *queue_pop(struct queue *q);
 
+/**
+ * @brief Creates a standard TCP server with very large backlog
+ * @param port What port the server should be assigned
+ * @return File descriptor for the server
+ */
 int createServer(int port);
 
+/**
+ * @return Returns the current time in milliseconds
+ */
 long long currentTimeMs();
 
 #endif
