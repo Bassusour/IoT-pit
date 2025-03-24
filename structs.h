@@ -2,6 +2,9 @@
 #define STRUCTS_H
 
 #include <netinet/in.h>
+#include "uthash.h"
+
+enum State { CONNREQ, CONNACK, PUBLISH, PUBACK, PUBREL };
 
 struct client {
     int fd;
@@ -10,6 +13,15 @@ struct client {
     long long timeConnected;
     char ipaddr[INET6_ADDRSTRLEN];
     int port;
+};
+
+struct mqttClient {
+    int fd;
+    long long timeConnected;
+    char ipaddr[INET6_ADDRSTRLEN];
+    int port;
+    enum State state;
+    UT_hash_handle hh;
 };
 
 struct queue {
@@ -30,6 +42,7 @@ struct upnpStatistics {
     unsigned long totalConnects;
     unsigned long long totalWastedTime;
     unsigned long otherRequests;
+    unsigned long ssdpResponses;
 };
 
 extern struct telnetStatistics statsTelnet;

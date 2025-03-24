@@ -1,10 +1,10 @@
-#include "structs.h"
 #include <stdlib.h>
 #include <syslog.h>
 #include <errno.h>
 #include <unistd.h>
 #include <limits.h>
 #include <time.h>
+#include "structs.h"
 
 struct queue clientQueueTelnet;
 struct queue clientQueueUpnp;

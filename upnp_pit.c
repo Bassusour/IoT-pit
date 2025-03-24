@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <signal.h>
+#include <ifaddrs.h>
 #include "structs.h"
 
 #define SSDP_PORT 1900
@@ -24,27 +25,41 @@
 // Required to be a HTTP GET request (Section 2.1 from specifications)
 const char *FAKE_DEVICE_DESCRIPTION =
     "<?xml version=\"1.0\"?>\n"
-    "<root xmlns=\"urn:schemas-upnp-org:device-1-0\">\n"
+    "<root xmlns=\"urn:Philips:device-1-0\">\n"
     "  <specVersion>\n"
     "    <major>1</major>\n"
     "    <minor>0</minor>\n"
     "  </specVersion>\n"
     "  <device>\n"
-    "    <deviceType>urn:schemas-upnp-org:device:Basic:1</deviceType>\n"
+    "    <deviceType>urn:Philips:device:insight:1</deviceType>\n"
     "    <friendlyName>Philips Hue Smart Bulb</friendlyName>\n"
-    "    <manufacturer>Philips</manufacturer>\n"
-    "    <manufacturerURL>https://www.philips-hue.com</manufacturerURL>\n"
-    "    <modelDescription>Philips Hue A19 White and Color Ambiance</modelDescription>\n"
-    "    <modelName>Hue A19</modelName>\n"
-    "    <modelNumber>9290012573A</modelNumber>\n"
-    "    <modelURL>https://www.philips-hue.com/en-us/p/hue-white-and-color-ambiance-a19</modelURL>\n"
+    "      <manufacturer>Philips</manufacturer>\n"
+    "      <manufacturerURL>https://www.philips-hue.com</manufacturerURL>\n"
+    "      <modelDescription>Philips Hue A19 White and Color Ambiance</modelDescription>\n"
+    "      <modelName>Hue A19</modelName>\n"
+    "      <modelNumber>9290012573A</modelNumber>\n"
+    "      <modelURL>https://www.philips-hue.com/en-us/p/hue-white-and-color-ambiance-a19</modelURL>\n"
     "    <serialNumber>PHL-00256739</serialNumber>\n"
     "    <UDN>uuid:31c79c6d-7d92-4bbf-bf72-5b68591e1731</UDN>\n"
+    "      <UPC>123456789</UPC>\n"
+    "    <macAddress>149182B3A4D0</macAddress>"
+    "    <firmwareVersion>Philips_Hue_2.00.10966.PVT-OWRT-InsightV2</firmwareVersion>\n"
+    "    <iconVersion>1|49153</iconVersion>\n"
+    "    <binaryState>8</binaryState>\n"
+    "        <iconList>\n" 
+    "    <icon>\n"
+    "      <mimetype>jpg</mimetype>\n"
+    "      <width>100</width>\n"
+    "      <height>100</height>\n"
+    "      <depth>100</depth>\n"
+    "        <url>icon.jpg</url>\n"
+    "      </icon>\n"
+    "    </iconList>\n"
     "    <serviceList>\n";
 
 const char *FAKE_CHUNK =
     "      <service>\n"
-    "        <serviceType>urn:schemas-upnp-org:service:SwitchPower:1</serviceType>\n"
+    "        <serviceType>urn:Philips:service:SwitchPower:1</serviceType>\n"
     "        <serviceId>urn:upnp-org:serviceId:SwitchPower</serviceId>\n"
     "        <controlURL>/hue_control</controlURL>\n"
     "        <eventSubURL>/hue_event</eventSubURL>\n"
@@ -53,25 +68,52 @@ const char *FAKE_CHUNK =
 
 void heartbeatLog() {
     syslog(LOG_INFO, "Server is running with %d connected clients.", clientQueueUpnp.length);
-    syslog(LOG_INFO, "Current statistics: wasted time: %lld ms. Total connected clients: %ld", statsUpnp.totalWastedTime, statsUpnp.totalConnects);
+    syslog(LOG_INFO, "Current statistics: wasted time: %lld ms. Total connected clients: %ld. Total other requests: %ld", statsUpnp.totalWastedTime, statsUpnp.totalConnects, statsUpnp.otherRequests);
 }
 
-char* getLocalIpAddress(){
-    char hostbuffer[256];
-    struct hostent *hostEntry;
-    gethostname(hostbuffer, sizeof(hostbuffer));
-    hostEntry = gethostbyname(hostbuffer);
-    if(hostEntry == NULL){
-        syslog(LOG_ERR, "Failed getting hostname");
-        exit(EXIT_FAILURE);
+// char* getLocalIpAddress(){
+//     char hostbuffer[256];
+//     struct hostent *hostEntry;
+//     gethostname(hostbuffer, sizeof(hostbuffer));
+//     hostEntry = gethostbyname(hostbuffer);
+//     if(hostEntry == NULL){
+//         syslog(LOG_ERR, "Failed getting hostname");
+//         exit(EXIT_FAILURE);
+//     }
+//     char *ipAddress = inet_ntoa(*((struct in_addr*)
+//                         hostEntry->h_addr_list[0]));
+
+//     return ipAddress;
+// }
+
+
+char* getLocalIpAddress() {
+    struct ifaddrs *ifaddr, *ifa;
+    static char ipAddress[INET_ADDRSTRLEN];  // Buffer to store IP
+
+    if (getifaddrs(&ifaddr) == -1) {
+        perror("getifaddrs");
+        return NULL;
     }
-    char *ipAddress = inet_ntoa(*((struct in_addr*)
-                        hostEntry->h_addr_list[0]));
 
-    return ipAddress;
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_INET) {
+            struct sockaddr_in *addr = (struct sockaddr_in *)ifa->ifa_addr;
+            const char *ip = inet_ntoa(addr->sin_addr);
+
+            if (strcmp(ifa->ifa_name, "lo") != 0) {
+                strncpy(ipAddress, ip, INET_ADDRSTRLEN);
+                freeifaddrs(ifaddr);
+                return ipAddress;
+            }
+        }
+    }
+
+    freeifaddrs(ifaddr);
+    return NULL;  // No valid IP found
 }
 
-char* buildSsdpResponse() {
+char* ssdpResponse() {
     char *ipAddress = getLocalIpAddress();
 
     char *responseBuffer = (char*) malloc((512)*sizeof(char));
@@ -81,8 +123,10 @@ char* buildSsdpResponse() {
         "EXT:\r\n"
         "LOCATION: http://%s:%d/hue-device.xml\r\n"
         "SERVER: Linux/3.14 UPnP/1.0 PhilipsHue/2.1\r\n"
-        "ST: urn:schemas-upnp-org:device:Basic:1\r\n"
-        "USN: uuid:bd752e88-91a9-49e4-8297-8433e05d1c22::urn:schemas-upnp-org:device:Basic:1\r\n"
+        "ST: urn:Philips:device:Basic:1\r\n"
+        "USN: uuid:bd752e88-91a9-49e4-8297-8433e05d1c22::urn:Philips:device:Basic:1\r\n"
+        "BOOTID.UPNP.ORG: 1\r\n"
+        "CONFIGID.UPNP.ORG: 1337\r\n"
         "\r\n", ipAddress, HTTP_PORT);
     return responseBuffer;
 }
@@ -90,13 +134,13 @@ char* buildSsdpResponse() {
 // Handles SSDP discovery requests and sends fake responses
 void *ssdpListener(void *arg) {
     (void)arg;
-    char* response = buildSsdpResponse();
+    char* response = ssdpResponse();
     int sockFd;
     struct sockaddr_in serverAddr, client_addr;
     socklen_t addrLen = sizeof(client_addr);
     char buffer[1024];
 
-    printf("response: %s\n", response);
+    // printf("response: %s\n", response);
 
     if ((sockFd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) { // works
         syslog(LOG_ERR, "SSDP Socket creation failed");
@@ -136,17 +180,19 @@ void *ssdpListener(void *arg) {
 
         // Ignore all requests that are not discovery
         if (strstr(buffer, "M-SEARCH") != NULL) {
-            // if(strstr(buffer, "")) // Check header values
             char client_ip[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
             syslog(LOG_INFO, "Received SSDP M-SEARCH request from %s\n", client_ip);
+
             sendto(sockFd, response, strlen(response), 0,
                 (struct sockaddr *)&client_addr, sizeof(client_addr));
+
             syslog(LOG_INFO, "Sent fake SSDP response to %s\n", client_ip);
+            statsUpnp.ssdpResponses += 1;
         }
     }
 
-    free(response);
+    free(ssdpResponse);
     close(sockFd);
     return NULL;
 }
@@ -185,6 +231,8 @@ void *httpServer(void *arg) {
             if(clientQueueUpnp.head->sendNext <= now){
                 struct client *c = queue_pop(&clientQueueUpnp);
 
+                printf("writing...\n");
+
                 char chunk_size[10];
                 snprintf(chunk_size, sizeof(chunk_size), "%X\r\n", (int)strlen(FAKE_CHUNK));
                 write(c->fd, chunk_size, strlen(chunk_size)); // sizeof is too short
@@ -194,6 +242,7 @@ void *httpServer(void *arg) {
                 if (out == -1) {
                     printf("Out is %ld with errno %s\n", out, strerror(errno));
                     if (errno == EAGAIN || errno == EWOULDBLOCK) { // Avoid blocking
+                        printf("blocking detected\n");
                         c->sendNext = now + DELAY_MS;
                         c->timeConnected += DELAY_MS;
                         statsUpnp.totalWastedTime += DELAY_MS;
@@ -266,17 +315,17 @@ void *httpServer(void *arg) {
                     newClient->port = ntohs(clientAddr.sin_port);
                     queue_append(&clientQueueUpnp, newClient);
 
-                    // syslog(LOG_INFO,"Accepted GET request from from %s:%d\n",
-                    //     inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
-                    printf("Accepted GET request from from %s:%d\n",
+                    syslog(LOG_INFO,"Accepted GET request from from %s:%d\n",
                         inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
+                    // printf("Accepted GET request from from %s:%d\n",
+                    //     inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
                 // Ignore requests without a method or url
                 // } else if (strcmp(method, "") == 0 || strcmp(url, "")) {
                 //     continue;
                 } else {
                     statsUpnp.otherRequests += 1;
-                    // syslog(LOG_INFO, "Received %s request with %s url", method, url);
-                    printf("Received %s request with %s url\n", method, url);
+                    syslog(LOG_INFO, "Received %s request with %s url", method, url);
+                    // printf("Received %s request with %s url\n", method, url);
                     close(clientFd);
                     free(newClient);
                     continue;
@@ -294,6 +343,7 @@ void initializeStats(){
     statsUpnp.totalConnects = 0;
     statsUpnp.totalWastedTime = 0;
     statsUpnp.otherRequests = 0;
+    statsUpnp.ssdpResponses = 0;
 }
 
 int main() {

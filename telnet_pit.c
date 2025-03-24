@@ -15,7 +15,6 @@
 #include "structs.h"
 
 #define PORT 23
-#define MAX_CLIENTS 4096
 #define DELAY_MS 100
 #define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
 
