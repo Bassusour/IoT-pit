@@ -1,5 +1,5 @@
 // Idea: Never finish the 4-way handshake that is required for QoS 2. Specifications on this is undefined, since a server is expected to always complete the handshake
-
+// Idea: Server sets a low (1) Receive Maximum in CONNACK 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -99,13 +99,14 @@ void readConnreq(uint8_t* buffer, int length, int offset, struct mqttClient* cli
         while (offset < props_end && offset < length) {
             uint8_t prop_id = buffer[offset++];
             switch (prop_id) {
-                case 0x21: { // Receive Maximum
+                case 0x11:  // Session expiry interval
+                    break;
+                case 0x21:  // Receive Maximum
                     if (offset + 2 > length) return;
                     uint16_t receive_max = (buffer[offset] << 8) | buffer[offset + 1];
                     offset += 2;
                     printf("Receive Maximum: %u\n", receive_max);
                     break;
-                }
                 default:
                     printf("Unknown Property ID: 0x%02X\n", prop_id);
                     return;
@@ -153,6 +154,29 @@ void readConnreq(uint8_t* buffer, int length, int offset, struct mqttClient* cli
         offset += pass_len;
         printf("Password: %s\n", password);
     }
+}
+
+void sendConnack(struct mqttClient* client){
+    int size = client->version == V5 ? 8 : 4;
+    uint8_t *arr = (uint8_t *)malloc( sizeof(uint8_t) * size ) ;
+    if(client->version == V5) {
+        arr[0] = 0x20;       // CONNACK fixed header
+        arr[1] = 0x06;       // Remaining Length
+        arr[2] = 0x00;       // Connect Acknowledge Flags (no session flag)
+        arr[3] = 0x00;       // Reason Code (Success)
+        arr[4] = 0x03;       // Properties Length
+        arr[5] = 0x21;       // Property ID: Receive Maximum
+        arr[6] = 0x00;       // MSB
+        arr[7] = 0x01;       // LSB (Receive Maximum = 1)
+    } else {
+        arr[0] = 0x20;       // CONNACK fixed header
+        arr[1] = 0x02;       // Remaining length
+        arr[2] = 0x00;       // Connect Acknowledge Flags (no session flag)
+        arr[3] = 0x00;       // Return code (Success)
+    }
+
+    write(client->fd, arr, sizeof(arr));
+    free(arr);
 }
 
 enum State determineRequest(uint8_t firstByte) {
@@ -296,7 +320,7 @@ int main() {
                 switch (state) {
                     case CONNECT:
                         readConnreq(client->buffer, result[0], result[1], client);
-                        // sendConnack();
+                        sendConnack(client);
                         break;
                     case PUBREC:
                         break;
