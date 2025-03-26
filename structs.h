@@ -4,7 +4,8 @@
 #include <netinet/in.h>
 #include "uthash.h"
 
-enum State { CONNREQ, CONNACK, PUBLISH, PUBACK, PUBREL };
+enum State { CONNECT, CONNACK, PUBLISH, PUBREC, PUBREL, UNSUPPORTED_REQUEST };
+enum MqttVersion { V5, V311 };
 
 struct client {
     int fd;
@@ -20,6 +21,9 @@ struct mqttClient {
     long long timeConnected;
     char ipaddr[INET6_ADDRSTRLEN];
     int port;
+    uint8_t buffer[1024];
+    int bytesWrittenToBuffer;
+    enum MqttVersion version;
     enum State state;
     UT_hash_handle hh;
 };
