@@ -4,7 +4,7 @@
 #include <netinet/in.h>
 #include "uthash.h"
 
-enum State { CONNECT, CONNACK, PUBLISH, PUBREC, PUBREL, UNSUPPORTED_REQUEST };
+enum State { CONNECT, CONNACK, PUBLISH, PUBREC, PUBREL, PING, SUBSCRIBE, DISCONNECT, UNSUPPORTED_REQUEST };
 enum MqttVersion { V5, V311 };
 
 struct client {
