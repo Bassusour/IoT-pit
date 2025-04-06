@@ -4,7 +4,7 @@
 #include <netinet/in.h>
 #include "uthash.h"
 
-enum State { CONNECT, CONNACK, PUBLISH, PUBREC, PUBREL, PING, SUBSCRIBE, DISCONNECT, UNSUPPORTED_REQUEST };
+enum Request { CONNECT, PING, SUBSCRIBE, PUBREC, DISCONNECT, UNSUPPORTED_REQUEST };
 enum MqttVersion { V5, V311 };
 
 struct client {
@@ -18,13 +18,14 @@ struct client {
 
 struct mqttClient {
     int fd;
-    long long timeConnected;
     char ipaddr[INET6_ADDRSTRLEN];
     int port;
     uint8_t buffer[1024];
-    int bytesWrittenToBuffer;
+    uint16_t bytesWrittenToBuffer;
+    uint16_t keepAlive;
+    uint64_t lastActivityMs;
+    long long timeOfConnection;
     enum MqttVersion version;
-    enum State state;
     UT_hash_handle hh;
 };
 
@@ -47,6 +48,11 @@ struct upnpStatistics {
     unsigned long long totalWastedTime;
     unsigned long otherRequests;
     unsigned long ssdpResponses;
+};
+
+struct mqttStatistics {
+    unsigned long totalConnects;
+    unsigned long long totalWastedTime;
 };
 
 extern struct telnetStatistics statsTelnet;
