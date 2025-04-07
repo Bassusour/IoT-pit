@@ -20,6 +20,7 @@
 #define MAX_FDS 1024
 #define MAX_EVENTS 10
 #define TIMEOUT_VALUE_MS 120000 // 120s
+#define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
 
 // void heartbeatLog() {
 //     syslog(LOG_INFO, "Server is running with %d connected clients.", clientQueueUpnp.length);
@@ -41,6 +42,10 @@ void addClient(struct mqttClient* client) {
 
 void deleteClient(struct mqttClient* client) {
     HASH_DEL(clients, client);
+}
+
+void heartbeatLog() {
+    syslog(LOG_INFO, "Server is running with %d connected clients.", HASH_COUNT(clients));
 }
 
 uint8_t readConnreq(uint8_t* buffer, uint32_t length, uint32_t offset, struct mqttClient* client){
@@ -76,9 +81,9 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t length, uint32_t offset, struct mq
     if(proto_level == 0b101) {
         syslog(LOG_INFO, "Client connected with v5");
         client->version = V5;
-    } else if (proto_level == 0b100) {
-        syslog(LOG_INFO, "Client connected with v3.1.1");
-        client->version = V311;
+    // } else if (proto_level == 0b100) {
+    //     syslog(LOG_INFO, "Client connected with v3.1.1");
+    //     client->version = V311;
     } else {
         syslog(LOG_ERR, "Unsupported MQTT version: %d", proto_level);
         return 0x01; // Unacceptable protocol version
@@ -189,15 +194,15 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t length, uint32_t offset, struct mq
     return 0x00; // Success
 }
 
-uint8_t readSubscribe(uint8_t* buffer, uint32_t length, uint32_t offset, enum MqttVersion version, uint32_t* packetId, char* topic) {
+void readSubscribe(uint8_t* buffer, uint32_t length, uint32_t offset, enum MqttVersion version) {
     syslog(LOG_INFO, "Reading SUBSCRIBE request");
     if (offset + 2 > length) {
         syslog(LOG_ERR, "SUBSCRIBE request too short for fixed header");
-        return 0x80; // Unspecified error
+        return;
     }
 
-    *packetId = (buffer[offset] << 8) | buffer[offset + 1];
-    offset += 2;
+    // *packetId = (buffer[offset] << 8) | buffer[offset + 1];
+    offset += 2; // packetId
 
     if (version == V5) {
         uint32_t propsLength = 0;
@@ -208,7 +213,7 @@ uint8_t readSubscribe(uint8_t* buffer, uint32_t length, uint32_t offset, enum Mq
         do {
             if (offset >= length) {
                 syslog(LOG_ERR, "Incomplete variable byte integer");
-                return 0x80;
+                return;
             }
             byte = buffer[offset++];
             propsLength += (byte & 0b01111111) * multiplier;
@@ -218,19 +223,19 @@ uint8_t readSubscribe(uint8_t* buffer, uint32_t length, uint32_t offset, enum Mq
 
         if (offset + propsLength > length) {
             syslog(LOG_ERR, "Malformed property section in SUBSCRIBE");
-            return 0x80;
+            return;
         }
 
         // parse actual properties here if needed
         offset += propsLength;
     } else if ( version != V5 && version != V311) {
         syslog(LOG_ERR, "Unknown MQTT version in SUBSCRIBE");
-        return 0x80;
+        return;
     }
 
     if (offset + 3 > length) { // 2 bytes topic + 1 byte options
         syslog(LOG_ERR, "SUBSCRIBE topic section too short");
-        return 0x80;
+        return;
     }
 
     uint16_t topicLength = (buffer[offset] << 8) | buffer[offset + 1];
@@ -238,51 +243,25 @@ uint8_t readSubscribe(uint8_t* buffer, uint32_t length, uint32_t offset, enum Mq
 
     if (offset + topicLength + 1 > length) {
         syslog(LOG_ERR, "SUBSCRIBE topic filter length exceeds packet size");
-        return 0x80;
+        return;
     }
 
+    char topic[256];
     uint16_t safeLength = topicLength < 255 ? topicLength : 255;
     memcpy(topic, &buffer[offset], safeLength);
     topic[safeLength] = '\0';
-    syslog(LOG_INFO, "Received topic subscription: %s", topic);
+    syslog(LOG_INFO, "SUBSCRIBE topic subscription: %s", topic);
     offset += topicLength;
 
     uint8_t options = buffer[offset++];
     uint8_t qos = options & 0b11;
-    if (qos < 2) {
-        syslog(LOG_WARNING, "Client requested QoS (%d). Deny subscription", qos);
-        return 0x80;
-    }
+    // if (qos < 2) {
+    //     syslog(LOG_WARNING, "Client requested QoS (%d). Deny subscription", qos);
+    //     return;
+    // }
 
-    syslog(LOG_INFO, "Successfully received SUBSCRIBE request");
-    return 0x02;  // Granted QoS 2
-}
-
-bool isMalformedTopic(const char* topic) {
-    size_t len = strlen(topic);
-
-    for (size_t i = 1; i < len; ++i) {
-        char c = topic[i];
-
-        // Rule: '#' must be the last character and must be a full level
-        if (c == '#') {
-            if (i != len - 1) return true;
-            if (i > 0 && topic[i - 1] != '/') return true;
-            if (i == 0 && len != 1) return true;
-        }
-
-        // Rule: '+' must occupy entire level
-        if (c == '+') {
-            if (i > 0 && topic[i - 1] != '/') return true;
-            if (i < len - 1 && topic[i + 1] != '/') return true;
-        }
-    }
-
-    return false;
-}
-
-bool isWildcardTopic(const char* topic) {
-    return strchr(topic, '#') || strchr(topic, '+');
+    syslog(LOG_INFO, "SUBSCRIBE topic subscription: %s with QoS %d", topic, qos);
+    return; 
 }
 
 void generateFakeMatchingTopic(char* sub, size_t length) {
@@ -309,78 +288,8 @@ void generateFakeMatchingTopic(char* sub, size_t length) {
     strncpy(sub, buffer, length);
 }
 
-bool sendSuback(struct mqttClient* client, uint16_t packet_id, bool malformedTopic, uint8_t reasonCode) {
-    uint8_t fixedHeader[5];
-    uint8_t propsLength = 0;
-
-    size_t remainingLength = 2 + (client->version == V5 ? 1 + propsLength : 0) + 1;  // Packet ID + [Props] + Reason Code
-
-    // Encode Remaining Length
-    size_t fixedHeaderLength = 0;
-    fixedHeader[fixedHeaderLength++] = 0b10010000;  // SUBACK
-
-    size_t rem = remainingLength;
-    do {
-        uint8_t byte = rem % 128;
-        rem /= 128;
-        if (rem > 0) byte |= 128;
-        fixedHeader[fixedHeaderLength++] = byte;
-    } while (rem > 0);
-
-    // Build Full Packet
-    ssize_t totalLength = fixedHeaderLength + remainingLength;
-    uint8_t* packet = malloc(totalLength);
-    if (!packet) {
-        syslog(LOG_ERR, "SUBACK packet creation failed.");
-        return false;
-    }
-
-    size_t offset = 0;
-    memcpy(packet, fixedHeader, fixedHeaderLength);
-    offset += fixedHeaderLength;
-
-    // Packet ID (big endian)
-    packet[offset++] = packet_id >> 8;
-    packet[offset++] = packet_id & 0xFF;
-
-    // Properties (MQTT v5 only)
-    if (client->version == V5) {
-        packet[offset++] = propsLength;
-    }
-
-    // Reason Code / Return Code
-    if(!malformedTopic){
-        packet[offset++] = reasonCode;
-    } else {
-        packet[offset++] = 0x80; // Unspecified error
-    }
-    
-
-    // printf("SUBACK package:\n");
-    // for (size_t i = 0; i < totalLength; i++) {
-    //     printf("%02X ", packet[i]);
-    // }
-    // printf("\n");
-
-    // Send
-    ssize_t w = write(client->fd, packet, totalLength);
-    if (w == -1) {
-        syslog(LOG_ERR, "sendSuback: write failed. May retry.");
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            return false;
-        }
-    } else {
-        syslog(LOG_INFO, "Sent SUBACK (QoS 2) to client %d\n", client->fd);
-    }
-
-    free(packet);
-    return true;
-}
-
 bool sendConnack(struct mqttClient* client, uint8_t reasonCode) {
-    // uint8_t reasonCode = 0x00; // Success by default
-
-    int size = client->version == V5 ? 5 : 4;
+    int size = client->version == V5 ? 8 : 4;
     uint8_t* arr = malloc(size);
     if (!arr) {
         syslog(LOG_ERR, "malloc failed for connack packet");
@@ -389,10 +298,13 @@ bool sendConnack(struct mqttClient* client, uint8_t reasonCode) {
 
     if (client->version == V5) {
         arr[0] = 0x20;       // CONNACK fixed header
-        arr[1] = 0x03;       // Remaining Length
+        arr[1] = 0x06;       // Remaining Length
         arr[2] = 0x00;       // Connect Acknowledge Flags (Session Present = 0)
         arr[3] = reasonCode; // Reason Code
-        arr[4] = 0x00;       // Properties Length
+        arr[4] = 0x03;       // Properties Length
+        arr[5] = 0x21;       // Property ID: Receive Maximum
+        arr[6] = 0x00;       // MSB
+        arr[7] = 0x01;       // LSB (Receive Maximum = 1)
     } else {
         arr[0] = 0x20;       // CONNACK fixed header
         arr[1] = 0x02;       // Remaining Length
@@ -412,6 +324,91 @@ bool sendConnack(struct mqttClient* client, uint8_t reasonCode) {
 
     free(arr);
     return true;
+}
+
+void readPublish(uint8_t* buffer, uint32_t length, uint32_t offset, struct mqttClient* client) {
+    if (offset + 2 > length) {
+        syslog(LOG_ERR, "PUBLISH packet too short for topic length");
+        return;
+    }
+
+    uint16_t topicLen = (buffer[offset] << 8) | buffer[offset + 1];
+    offset += 2;
+
+    if (offset + topicLen > length) {
+        syslog(LOG_ERR, "PUBLISH topic exceeds packet bounds");
+        return;
+    }
+
+    char topic[256] = {0};
+    memcpy(topic, &buffer[offset], topicLen < 255 ? topicLen : 255);
+    offset += topicLen;
+
+    uint8_t qos = (buffer[0] & 0b00000110) >> 1;
+    if (qos > 0) {
+        if (offset + 2 > length) return;
+        offset += 2; // packet id (don't care)
+    }
+
+    if (client->version == V5) {
+        uint32_t propLen = 0;
+        int multiplier = 1;
+        uint8_t byte;
+        do {
+            if (offset >= length) return;
+            byte = buffer[offset++];
+            propLen += (byte & 0b01111111) * multiplier;
+            multiplier *= 128;
+        } while ((byte & 0b10000000) != 0);
+        // Skip properties
+        offset += propLen;
+    }
+
+    // Remaining is payload
+    if (offset >= length) return;
+
+    uint32_t payloadLen = length - offset;
+    char payload[512] = {0};
+    memcpy(payload, &buffer[offset], payloadLen < 511 ? payloadLen : 511);
+
+    syslog(LOG_INFO, "PUBLISH received. Topic: %s, Payload: %s, QoS: %d", topic, payload, qos);
+}
+
+void readUnsubscribe(uint8_t* buffer, uint32_t length, uint32_t offset, struct mqttClient* client) {
+    if (offset + 2 > length) {
+        syslog(LOG_ERR, "UNSUBSCRIBE packet too short");
+        return;
+    }
+
+    uint16_t packetId = (buffer[offset] << 8) | buffer[offset + 1];
+    offset += 2;
+
+    if (client->version == V5) {
+        uint32_t propLen = 0;
+        int multiplier = 1;
+        uint8_t byte;
+        do {
+            if (offset >= length) return;
+            byte = buffer[offset++];
+            propLen += (byte & 0b01111111) * multiplier;
+            multiplier *= 128;
+        } while ((byte & 0b10000000) != 0);
+        // Skip properties
+        offset += propLen;
+    }
+
+    while (offset + 2 <= length) {
+        uint16_t topicLen = (buffer[offset] << 8) | buffer[offset + 1];
+        offset += 2;
+
+        if (offset + topicLen > length) return;
+
+        char topic[256] = {0};
+        memcpy(topic, &buffer[offset], topicLen < 255 ? topicLen : 255);
+        offset += topicLen;
+
+        syslog(LOG_INFO, "UNSUBSCRIBE received for topic: %s (Packet ID: %u)", topic, packetId);
+    }
 }
 
 bool sendPublish(struct mqttClient* client, const char* topic, const char* message) {
@@ -500,11 +497,10 @@ void readPubrec(uint8_t* buffer, uint32_t length, uint32_t offset, struct mqttCl
 
     if (client->version == V5) {
         if (offset >= length) {
-            syslog(LOG_INFO, "No Reason Code (default: Success)\n");
             return;
         }
         uint8_t reasonCode = buffer[offset++];
-        printf("Reason Code: 0x%02X\n", reasonCode);
+        syslog(LOG_INFO, "PUBREC Reason Code: 0x%02X\n", reasonCode);
 
         if (offset >= length) {
             return;
@@ -523,7 +519,6 @@ void readPubrec(uint8_t* buffer, uint32_t length, uint32_t offset, struct mqttCl
         } while ((byte & 128) != 0 && varint_bytes <= 4);
 
         if (offset + propLength > length) {
-            printf("Invalid Properties Length\n");
             return;
         }
 
@@ -582,6 +577,29 @@ void readPubrec(uint8_t* buffer, uint32_t length, uint32_t offset, struct mqttCl
     }
 }
 
+// TODO: untested
+bool sendPubrel(struct mqttClient* client, uint16_t packetId) {
+    uint8_t fixedHeader[6];
+    size_t offset = 0;
+
+    fixedHeader[offset++] = 0b01100010;         // Fixed header
+    fixedHeader[offset++] = 0x04;               // Remaining Length
+    fixedHeader[offset++] = packetId >> 8;      // packetId
+    fixedHeader[offset++] = packetId & 0xFF;
+
+    fixedHeader[offset++] = 0x00;               // Reason Code: Success
+    fixedHeader[offset++] = 0x00;               // Property Length
+
+    ssize_t w = write(client->fd, fixedHeader, offset);
+    if (w == -1) {
+        syslog(LOG_ERR, "sendPubrel: write failed");
+        return false;
+    }
+
+    syslog(LOG_INFO, "Sent PUBREL to client %d", client->fd);
+    return true;
+}
+
 bool sendPingresp(struct mqttClient* client) {
     uint8_t packet[2] = { 0xD0, 0x00 };
     ssize_t w = write(client->fd, packet, sizeof(packet));
@@ -607,28 +625,32 @@ void disconnectClient(struct mqttClient* client, int epollFd, long long now){
 }
 
 enum Request determineRequest(uint8_t firstByte) {
-    switch ((int) firstByte)
+    switch (firstByte >> 4)
     {
-    case 0b00010000:
+    case 0b0001:
         return CONNECT;
-    case 0b01010000:
+    case 0b0101:
         return PUBREC;
-    case 0b10000010:
+    case 0b1000:
         return SUBSCRIBE;
-    case 0b11000000:
+    case 0b1100:
         return PING;
-    case 0b11100000:
+    case 0b1110:
         return DISCONNECT;
+    case 0b0011:
+        return PUBLISH;
+    case 0b1010:
+        return UNSUBSCRIBE;
     default:
         return UNSUPPORTED_REQUEST;
     }
 }
 
 void calculateTotalPacketLength(uint8_t *buffer, uint32_t bytesWrittenToBuffer, uint32_t* totalPacketLength, uint32_t* offset) {
-    *totalPacketLength = 0;  // Default to "not ready"
+    *totalPacketLength = 0;
 
     if (bytesWrittenToBuffer < 2) {
-        return;  // Not enough for even fixed header
+        return;  // Not enough for fixed header
     }
 
     *offset = 1;                // Start at the remaining length field
@@ -668,7 +690,7 @@ void cleanupBuffer(struct mqttClient* client, uint32_t packetLength){
 int main() {
     openlog("mqtt_tarpit", LOG_PID | LOG_CONS, LOG_USER);
     
-    // signal(SIGPIPE, SIG_IGN);
+    signal(SIGPIPE, SIG_IGN);
     
     int serverSock = createServer(PORT);
     if (serverSock < 0) {
@@ -693,11 +715,16 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    int nfds;
+    long long lastHeartbeat = currentTimeMs();
     while(true) {
         long long now = currentTimeMs();
-        // Maybe use edge trigger, to avoid checking fd multiple times for incomplete packet transfer
-        nfds = epoll_wait(epollfd, eventsQueue, MAX_EVENTS, -1);
+
+        if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
+            heartbeatLog();
+            lastHeartbeat = now;
+        }
+
+        int nfds = epoll_wait(epollfd, eventsQueue, MAX_EVENTS, -1);
         if (nfds == -1) {
             syslog(LOG_ERR, "epoll_wait");
             exit(EXIT_FAILURE);
@@ -718,7 +745,6 @@ int main() {
                 newClient->bytesWrittenToBuffer = 0;
                 newClient->lastActivityMs = now;
                 newClient->timeOfConnection = now;
-                newClient->lastSubscribedTopic[0] = '\0';
                 newClient->keepAlive = 0; // Initial value. Will be updated after connect
                 memset(newClient->buffer, 0, sizeof(newClient->buffer)); // Maybe not necessary
                 // ev.events = EPOLLIN | EPOLLET;
@@ -757,49 +783,36 @@ int main() {
                     continue;
                 }
                 client->lastActivityMs = now;
-                enum Request state = determineRequest(client->buffer[0]);
+                enum Request request = determineRequest(client->buffer[0]);
 
-                bool ackSuccess = false;
-                bool pubSuccess = false;
-                switch (state) {
+                switch (request) {
                     case CONNECT:
                         uint8_t reasonCodeConn = readConnreq(client->buffer, totalPacketLength, variableHeaderOffset, client);
                         cleanupBuffer(client, totalPacketLength);
-                        ackSuccess = sendConnack(client, reasonCodeConn);
+                        bool ackSuccess = sendConnack(client, reasonCodeConn);
                         if(!ackSuccess) {
                             disconnectClient(client, epollfd, now);
                             break;
                         }
-                        pubSuccess = sendPublish(client, "$SYS/confidential", "username=admin password=admin");
+                        bool pubSuccess = sendPublish(client, "$SYS/confidential", "username=admin password=admin");
                         if(!pubSuccess) {
                             disconnectClient(client, epollfd, now);
-                            break;
                         }
                         break;
                     case SUBSCRIBE:
-                        uint32_t packetId;
-                        bool malformedTopic;
-                        uint8_t reasonCodeSub = readSubscribe(client->buffer, totalPacketLength, variableHeaderOffset, client->version, &packetId, client->lastSubscribedTopic);
-                        malformedTopic = isMalformedTopic(client->lastSubscribedTopic);
+                        readSubscribe(client->buffer, totalPacketLength, variableHeaderOffset, client->version);
                         cleanupBuffer(client, totalPacketLength);
-                        ackSuccess = sendSuback(client, packetId, malformedTopic, reasonCodeSub);
-                        if(!ackSuccess) {
-                            disconnectClient(client, epollfd, now);
-                            break;
-                        }
-                        if (reasonCodeSub != 0x80 && malformedTopic) break;
-
-                        if (isWildcardTopic(client->lastSubscribedTopic)) {
-                            generateFakeMatchingTopic(client->lastSubscribedTopic, sizeof(client->lastSubscribedTopic));
-                        } 
-                        pubSuccess = sendPublish(client, client->lastSubscribedTopic, "bla bla bla");
-                        if(!pubSuccess) {
-                            disconnectClient(client, epollfd, now);
-                            break;
-                        }
                         break;
                     case PUBREC:
                         readPubrec(client->buffer, totalPacketLength, variableHeaderOffset, client);
+                        cleanupBuffer(client, totalPacketLength);
+                        break;
+                    case PUBLISH:
+                        readPublish(client->buffer, totalPacketLength, variableHeaderOffset, client);
+                        cleanupBuffer(client, totalPacketLength);
+                        break;
+                    case UNSUBSCRIBE:
+                        readUnsubscribe(client->buffer, totalPacketLength, variableHeaderOffset, client);
                         cleanupBuffer(client, totalPacketLength);
                         break;
                     case PING:
@@ -811,16 +824,14 @@ int main() {
                         }
                         break;
                     case DISCONNECT:
-                        // TODO: Add statistics and logging. 
-                        // TODO: Handle missing keep-alive from CONNECT request
-                        // TODO: Handle wildcards DONE
-                        // TODO: Increase TCP window. DONE
-                        // TODO: More tests with mqtt 3rd parites (probably not needed)
-                        // TODO: Handle other requests (like publish, unsubscribe and auth)
                         disconnectClient(client, epollfd, now);
                         break;
                     default:
                         break;
+                        // TODO: Keep PUBREC and PUBCOMP?
+                        // TODO: Clean up version 311
+                        // TODO: Test pubrel function
+                        // TODO: Remove port from clients (no need to save that)
                 }
             }
         }
@@ -831,15 +842,14 @@ int main() {
             tmp = c->hh.next;
             if ((c->keepAlive != 0 && timeSinceLastActivityMs > c->keepAlive * 1400) || 
                 (timeSinceLastActivityMs > TIMEOUT_VALUE_MS)) {
-                bool success = false;
-                if (c->lastSubscribedTopic[0] != '\0') {
-                    success = sendPublish(c, c->lastSubscribedTopic, "data");
-                } else {
-                    success = sendPublish(c, "$SYS/confidential", "username=admin123 password=admin321");
-                }
-                
+                bool success = sendPubrel(c, 1234);
                 c->lastActivityMs = now;
-                if(!success) disconnectClient(c, epollfd, now);
+
+                if(!success) {
+                    disconnectClient(c, epollfd, now);
+                    continue;
+                }
+                sendPublish(c, "$SYS/confidential", "username=admin123 password=admin321");
             }
         }
     }

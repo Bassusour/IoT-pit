@@ -4,7 +4,7 @@
 #include <netinet/in.h>
 #include "uthash.h"
 
-enum Request { CONNECT, PING, SUBSCRIBE, PUBREC, DISCONNECT, UNSUPPORTED_REQUEST };
+enum Request { CONNECT, PING, SUBSCRIBE, PUBREC, DISCONNECT, PUBLISH, UNSUBSCRIBE, UNSUPPORTED_REQUEST };
 enum MqttVersion { V5, V311 };
 
 struct client {
@@ -25,7 +25,6 @@ struct mqttClient {
     uint16_t keepAlive;
     uint64_t lastActivityMs;
     long long timeOfConnection;
-    char lastSubscribedTopic[256];
     enum MqttVersion version;
     UT_hash_handle hh;
 };
