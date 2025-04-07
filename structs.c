@@ -57,6 +57,11 @@ int createServer(int port) {
         syslog(LOG_ERR,"setsockopt failed");
     }
 
+    // Set TCP receive window
+    int winSize = 256; // Doubled
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &winSize, sizeof(winSize));
+    setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &winSize, sizeof(winSize));
+
     // Bind to IPv4 address and port
     struct sockaddr_in addr4 = {
         .sin_family = AF_INET,

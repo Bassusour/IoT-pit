@@ -25,6 +25,7 @@ struct mqttClient {
     uint16_t keepAlive;
     uint64_t lastActivityMs;
     long long timeOfConnection;
+    char lastSubscribedTopic[256];
     enum MqttVersion version;
     UT_hash_handle hh;
 };
