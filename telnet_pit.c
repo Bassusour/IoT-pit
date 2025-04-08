@@ -91,8 +91,8 @@ int main() {
                         queue_append(&clientQueueTelnet, c);
                     } else {
                         long long timeTrapped = c->timeConnected;
-                        syslog(LOG_INFO, "Client disconnected from IP: %s:%d with fd: %d with time %lld", 
-                            c->ipaddr, c->port, c->fd, timeTrapped);
+                        syslog(LOG_INFO, "Client disconnected from IP: %s with fd: %d with time %lld", 
+                            c->ipaddr, c->fd, timeTrapped);
                         close(c->fd);
                         free(c);
                     }
@@ -131,7 +131,6 @@ int main() {
                 newClient->sendNext = now + DELAY_MS;
                 newClient->timeConnected = 0;
                 strncpy(newClient->ipaddr, inet_ntoa(clientAddr.sin_addr), INET6_ADDRSTRLEN);
-                newClient->port = ntohs(clientAddr.sin_port);
                 queue_append(&clientQueueTelnet, newClient);
 
                 syslog(LOG_INFO,"Accepted connection from %s:%d\n",

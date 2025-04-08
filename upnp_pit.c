@@ -250,8 +250,8 @@ void *httpServer(void *arg) {
                     } else if (errno == EPIPE) {
                         printf("Logged disconnect\n");
                         long long timeTrapped = c->timeConnected;
-                        syslog(LOG_INFO, "Client disconnected from IP: %s:%d with fd: %d with time %lld",
-                            c->ipaddr, c->port, c->fd, timeTrapped);
+                        syslog(LOG_INFO, "Client disconnected from IP: %s with fd: %d with time %lld",
+                            c->ipaddr, c->fd, timeTrapped);
                         close(c->fd);
                         free(c);
                     }
@@ -312,7 +312,6 @@ void *httpServer(void *arg) {
                     newClient->sendNext = now + DELAY_MS;
                     newClient->timeConnected = 0;
                     snprintf(newClient->ipaddr, sizeof(newClient->ipaddr), "%s", inet_ntoa(clientAddr.sin_addr));
-                    newClient->port = ntohs(clientAddr.sin_port);
                     queue_append(&clientQueueUpnp, newClient);
 
                     syslog(LOG_INFO,"Accepted GET request from from %s:%d\n",
