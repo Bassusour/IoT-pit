@@ -22,6 +22,7 @@
 #define TIMEOUT_INTERVAL_MS 5000
 #define PUBREL_INTERVAL_MS 10000
 #define HEARTBEAT_INTERVAL_MS 10000
+#define MAX_PACKETS_PER_CLIENTS 50
 
 struct mqttClient* clients = NULL;
 
@@ -595,38 +596,52 @@ enum Request determineRequest(uint8_t firstByte) {
     }
 }
 
-void calculateTotalPacketLength(uint8_t *buffer, uint32_t bytesWrittenToBuffer, uint32_t* totalPacketLength, uint32_t* offset) {
-    *totalPacketLength = 0;
+void calculateTotalPacketLengths(uint8_t *buffer, uint32_t bytesWrittenToBuffer,
+                                 uint32_t *packetLengths, uint32_t *variableHeaderOffsets,
+                                 uint32_t *packetCount) {
+    *packetCount = 0;
+    uint32_t offset = 0;
 
-    if (bytesWrittenToBuffer < 2) {
-        return;  // Not enough for fixed header
-    }
-
-    *offset = 1;                // Start at the remaining length field
-    uint32_t value = 0;         // The actual number of bytes in the variable header + payload
-    uint32_t encodedBytes = 0;  // The number of bytes that were used to encode value
-    uint32_t multiplier = 1;    
-
-    // Parse the variable-length Remaining Length field (max 4 bytes)
-    for (int i = 0; i < 4; i++) {
-        if (*offset >= bytesWrittenToBuffer) {
-            return;  // Not enough data to finish varint
+    while (offset < bytesWrittenToBuffer) {
+        if (bytesWrittenToBuffer - offset < 2) {
+            break;  // Not enough data for fixed header
         }
-        uint8_t byte = buffer[*offset];
-        value += (byte & 0b01111111) * multiplier;
-        multiplier *= 128;
-        (*offset)++;
-        encodedBytes++;
 
-        if ((byte & 0b10000000) == 0) {
-            break;  // Finished parsing varint
+        if(*packetCount == MAX_PACKETS_PER_CLIENTS) {
+            // Disconnect client?
+            break;
         }
-    }
 
-    // fixed header + number of bytes used to encode value + (number of bytes in the variable header + payload)
-    uint32_t totalBytes = 1 + encodedBytes + value;
-    if (bytesWrittenToBuffer >= totalBytes) { // Allow buffer to contain multiple requests
-        *totalPacketLength = totalBytes;
+        uint32_t remainingLength = 0;
+        uint32_t multiplier = 1;
+        uint32_t encodedBytes = 0;
+
+        // Parse the variable-length Remaining Length field (max 4 bytes)
+        for (int i = 0; i < 4; i++) {
+            if (offset + 1 + i >= bytesWrittenToBuffer) {
+                return;  // Not enough data to finish varint
+            }
+            uint8_t byte = buffer[offset + 1 + i];
+            remainingLength += (byte & 0b01111111) * multiplier;
+            multiplier *= 128;
+            encodedBytes++;
+
+            if ((byte & 0b10000000) == 0) {
+                break;  // Finished parsing varint
+            }
+        }
+
+        uint32_t fixedHeaderLength = 1 + encodedBytes;
+        uint32_t totalPacketLength = fixedHeaderLength + remainingLength;
+
+        if (bytesWrittenToBuffer - offset >= totalPacketLength) {
+            packetLengths[*packetCount] = totalPacketLength;
+            variableHeaderOffsets[*packetCount] = offset + fixedHeaderLength;
+            (*packetCount)++;
+            offset += totalPacketLength;
+        } else {
+            break;  // Incomplete packet
+        }
     }
 }
 
@@ -728,81 +743,96 @@ int main() {
 
                 client->bytesWrittenToBuffer += bytesRead;
 
-                uint32_t totalPacketLength, variableHeaderOffset;
-                calculateTotalPacketLength(client->buffer, client->bytesWrittenToBuffer, &totalPacketLength, &variableHeaderOffset);
-                if (totalPacketLength == 0) {
-                    continue;
-                }
-                client->lastActivityMs = now;
-                enum Request request = determineRequest(client->buffer[0]);
+                uint32_t packetLengths[MAX_PACKETS_PER_CLIENTS];
+                uint32_t variableHeaderOffsets[MAX_PACKETS_PER_CLIENTS];
+                uint32_t packetCount = 0;
 
-                switch (request) {
-                    case CONNECT:
-                        uint8_t reasonCodeConn = readConnreq(client->buffer, totalPacketLength, variableHeaderOffset, client);
-                        cleanupBuffer(client, totalPacketLength);
-                        bool ackSuccess = sendConnack(client, reasonCodeConn);
-                        if(!ackSuccess) {
+                calculateTotalPacketLengths(client->buffer, client->bytesWrittenToBuffer,
+                            packetLengths, variableHeaderOffsets, &packetCount);
+                
+                uint32_t packetOffset = 0;
+                for (uint32_t i = 0; i < packetCount; i++) {
+                    printf("current package: %d\n", i);
+                    uint32_t totalPacketLength = packetLengths[i];
+                    uint32_t variableHeaderOffset = variableHeaderOffsets[i];
+                    
+                    if (totalPacketLength == 0 || packetOffset + totalPacketLength > client->bytesWrittenToBuffer) {
+                        break; // Incomplete packet
+                    }
+
+                    client->lastActivityMs = now;
+                    enum Request request = determineRequest(client->buffer[packetOffset]);
+
+                    switch (request) {
+                        case CONNECT:
+                            uint8_t reasonCodeConn = readConnreq(client->buffer, totalPacketLength, variableHeaderOffset, client);
+                            cleanupBuffer(client, totalPacketLength);
+                            bool ackSuccess = sendConnack(client, reasonCodeConn);
+                            if(!ackSuccess) {
+                                disconnectClient(client, epollfd, now);
+                                break;
+                            }
+                            bool pubSuccess = sendPublish(client, "$SYS/confidential", "username=admin password=admin");
+                            if(!pubSuccess) {
+                                disconnectClient(client, epollfd, now);
+                            }
+                            break;
+                        case SUBSCRIBE:
+                            readSubscribe(client->buffer, totalPacketLength, variableHeaderOffset);
+                            cleanupBuffer(client, totalPacketLength);
+                            break;
+                        case PUBREC:
+                            readPubrec(client->buffer, totalPacketLength, variableHeaderOffset, client);
+                            cleanupBuffer(client, totalPacketLength);
+                            break;
+                        case PUBLISH:
+                            readPublish(client->buffer, totalPacketLength, variableHeaderOffset);
+                            cleanupBuffer(client, totalPacketLength);
+                            break;
+                        case PUBCOMP:
+                            readPubcomp(client->buffer, totalPacketLength, variableHeaderOffset, client);
+                            cleanupBuffer(client, totalPacketLength);
+                            sendPublish(client, "$SYS/credentials", "username=admin123 password=admin321");
+                            break;
+                        case UNSUBSCRIBE:
+                            readUnsubscribe(client->buffer, totalPacketLength, variableHeaderOffset);
+                            cleanupBuffer(client, totalPacketLength);
+                            break;
+                        case PING:
+                            cleanupBuffer(client, totalPacketLength);
+                            bool pingSuccess = sendPingresp(client);
+                            if(!pingSuccess){
+                                disconnectClient(client, epollfd, now);
+                                break;
+                            }
+                            break;
+                        case DISCONNECT:
                             disconnectClient(client, epollfd, now);
                             break;
-                        }
-                        bool pubSuccess = sendPublish(client, "$SYS/confidential", "username=admin password=admin");
-                        if(!pubSuccess) {
-                            disconnectClient(client, epollfd, now);
-                        }
-                        break;
-                    case SUBSCRIBE:
-                        readSubscribe(client->buffer, totalPacketLength, variableHeaderOffset);
-                        cleanupBuffer(client, totalPacketLength);
-                        break;
-                    case PUBREC:
-                        readPubrec(client->buffer, totalPacketLength, variableHeaderOffset, client);
-                        cleanupBuffer(client, totalPacketLength);
-                        break;
-                    case PUBLISH:
-                        readPublish(client->buffer, totalPacketLength, variableHeaderOffset);
-                        cleanupBuffer(client, totalPacketLength);
-                        break;
-                    case PUBCOMP:
-                        readPubcomp(client->buffer, totalPacketLength, variableHeaderOffset, client);
-                        cleanupBuffer(client, totalPacketLength);
-                        sendPublish(client, "$SYS/credentials", "username=admin123 password=admin321");
-                        break;
-                    case UNSUBSCRIBE:
-                        readUnsubscribe(client->buffer, totalPacketLength, variableHeaderOffset);
-                        cleanupBuffer(client, totalPacketLength);
-                        break;
-                    case PING:
-                        cleanupBuffer(client, totalPacketLength);
-                        bool pingSuccess = sendPingresp(client);
-                        if(!pingSuccess){
-                            disconnectClient(client, epollfd, now);
+                        default:
                             break;
-                        }
-                        break;
-                    case DISCONNECT:
-                        disconnectClient(client, epollfd, now);
-                        break;
-                    default:
-                        break;
+                    }
+                    packetOffset += totalPacketLength;
                 }
             }
+            
         }
         
         // Detect dead clients and disconnect them
-        for (struct mqttClient *c = clients, *tmp = NULL; c != NULL; c = tmp) {
-            long long timeSinceLastActivityMs = now - c->lastActivityMs;
-            tmp = c->hh.next;
-            if ((now - c->lastPubrelMs > PUBREL_INTERVAL_MS) || (timeSinceLastActivityMs > c->keepAlive * 1400)) {
-                bool success = sendPubrel(c, 1234);
-                c->lastActivityMs = now;
-                c->lastPubrelMs = now;
+        // for (struct mqttClient *c = clients, *tmp = NULL; c != NULL; c = tmp) {
+        //     long long timeSinceLastActivityMs = now - c->lastActivityMs;
+        //     tmp = c->hh.next;
+        //     if ((now - c->lastPubrelMs > PUBREL_INTERVAL_MS) || (timeSinceLastActivityMs > c->keepAlive * 1400)) {
+        //         bool success = sendPubrel(c, 1234);
+        //         c->lastActivityMs = now;
+        //         c->lastPubrelMs = now;
 
-                if(!success) {
-                    disconnectClient(c, epollfd, now);
-                    continue;
-                }
-            }
-        }
+        //         if(!success) {
+        //             disconnectClient(c, epollfd, now);
+        //             continue;
+        //         }
+        //     }
+        // }
     }
 
     closelog();
