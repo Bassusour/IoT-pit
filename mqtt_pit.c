@@ -22,7 +22,7 @@
 #define TIMEOUT_INTERVAL_MS 5000
 #define PUBREL_INTERVAL_MS 10000
 #define HEARTBEAT_INTERVAL_MS 10000
-#define MAX_PACKETS_PER_CLIENTS 50
+#define MAX_PACKETS_PER_CLIENTS 70
 
 struct mqttClient* clients = NULL;
 
@@ -45,17 +45,17 @@ void heartbeatLog() {
     syslog(LOG_INFO, "Server is running with %d connected clients.", HASH_COUNT(clients));
 }
 
-bool decodeVarint(const uint8_t* buffer, uint32_t length, uint32_t* offset, uint32_t* value) {
+bool decodeVarint(const uint8_t* buffer, uint32_t packetEnd, uint32_t* offset, uint32_t* value) {
     uint32_t result = 0;
     int multiplier = 1;
     uint8_t byte;
     int bytesRead = 0;
 
     do {
-        // if (*offset >= length) {
-        //     syslog(LOG_ERR, "Incomplete variable byte integer");
-        //     return false;
-        // }
+        if (*offset >= packetEnd) {
+            syslog(LOG_ERR, "Incomplete variable byte integer");
+            return false;
+        }
         byte = buffer[(*offset)++];
         result += (byte & 0b01111111) * multiplier;
         multiplier *= 128;
@@ -71,9 +71,9 @@ bool decodeVarint(const uint8_t* buffer, uint32_t length, uint32_t* offset, uint
     return true;
 }
 
-uint8_t readConnreq(uint8_t* buffer, uint32_t length, uint32_t offset, struct mqttClient* client){
+uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqttClient* client){
     syslog(LOG_INFO, "Reading CONNECT request");
-    if (offset + 2 > length) {
+    if (offset + 2 > packetEnd) {
         syslog(LOG_ERR, "CONNECT request too small for fixed header");
         return 0x80; // Unspecified error
     } 
@@ -90,7 +90,7 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t length, uint32_t offset, struct mq
     offset += 4;
 
     // Protocol Version
-    if (offset >= length) {
+    if (offset >= packetEnd) {
         syslog(LOG_ERR, "No protocol version given for CONNECT request");
         return 0x80;
     }
@@ -101,7 +101,7 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t length, uint32_t offset, struct mq
     }
 
     // Connect Flags
-    if (offset >= length) {
+    if (offset >= packetEnd) {
         syslog(LOG_ERR, "No connect flags supplied");
         return 0x80;
     }
@@ -109,7 +109,7 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t length, uint32_t offset, struct mq
     // printf("Connect Flags: 0x%02X\n", connect_flags);
 
     // Keep Alive
-    if (offset + 2 > length){
+    if (offset + 2 > packetEnd){
         syslog(LOG_ERR, "No keep-alive value supplied");
         return 0x80;
     } 
@@ -123,22 +123,22 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t length, uint32_t offset, struct mq
 
     // Properties Length (varint)
     uint32_t varint;
-    bool decodeSuccess = decodeVarint(buffer, length, &offset, &varint);
+    bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
     if(!decodeSuccess) {
         return 0x80;
     }
 
     uint32_t props_end = offset + varint;
-    while (offset < props_end && offset < length) {
+    while (offset < props_end && offset < packetEnd) {
         offset++; // Don't parse props, just skip
     }
 
     // Payload: Client ID
-    if (offset + 2 > length) return 0x80;
+    if (offset + 2 > packetEnd) return 0x80;
     uint16_t clientIdLength = (buffer[offset] << 8) | buffer[offset + 1];
     offset += 2;
 
-    if (offset + clientIdLength > length) {
+    if (offset + clientIdLength > packetEnd) {
         syslog(LOG_ERR, "clientId too long for packet");
         return 0x02;
     }
@@ -147,14 +147,14 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t length, uint32_t offset, struct mq
     // Username
     char username[256] = {0};
     if (connect_flags & 0b10000000) {
-        if (offset + 2 > length) {
+        if (offset + 2 > packetEnd) {
             syslog(LOG_ERR, "Username flag supplied, but with no username");
             return 0x80;
         } 
         uint16_t user_len = (buffer[offset] << 8) | buffer[offset + 1];
         offset += 2;
 
-        if (offset + user_len > length) {
+        if (offset + user_len > packetEnd) {
             syslog(LOG_ERR, "Username too long");
             return 0x80;
         }
@@ -168,13 +168,13 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t length, uint32_t offset, struct mq
     // Password
     char password[256] = {0};
     if (connect_flags & 0b1000000) {
-        if (offset + 2 > length) {
+        if (offset + 2 > packetEnd) {
             syslog(LOG_ERR, "Password flag supplied, but with no password");
             return 0x80;
         } 
         uint16_t passwordLength = (buffer[offset] << 8) | buffer[offset + 1];
         offset += 2;
-        if (offset + passwordLength > length){
+        if (offset + passwordLength > packetEnd){
             syslog(LOG_ERR, "Password too long");
             return 0x80;
         }
@@ -190,18 +190,18 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t length, uint32_t offset, struct mq
     return 0x00; // Success
 }
 
-void readSubscribe(uint8_t* buffer, uint32_t length, uint32_t offset) {
+void readSubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset) {
     syslog(LOG_INFO, "Reading SUBSCRIBE request");
-    // if (offset + 2 > length) {
-    //     syslog(LOG_ERR, "SUBSCRIBE request too short for fixed header");
-    //     return;
-    // }
+    if (offset + 2 > packetEnd) {
+        syslog(LOG_ERR, "SUBSCRIBE request too short for fixed header");
+        return;
+    }
 
     // *packetId = (buffer[offset] << 8) | buffer[offset + 1];
     offset += 2; // packetId
 
     uint32_t varint;
-    bool decodeSuccess = decodeVarint(buffer, length, &offset, &varint);
+    bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
     if(!decodeSuccess) {
         syslog(LOG_INFO, "Failed decoding varint");
         return;
@@ -210,18 +210,18 @@ void readSubscribe(uint8_t* buffer, uint32_t length, uint32_t offset) {
     // parse actual properties here if needed
     offset += varint;
 
-    // if (offset + 3 > length) { // 2 bytes topic + 1 byte options
-    //     syslog(LOG_ERR, "SUBSCRIBE topic section too short");
-    //     return;
-    // }
+    if (offset + 3 > packetEnd) { // 2 bytes topic + 1 byte options
+        syslog(LOG_ERR, "SUBSCRIBE topic section too short");
+        return;
+    }
 
     uint16_t topicLength = (buffer[offset] << 8) | buffer[offset + 1];
     offset += 2;
 
-    // if (offset + topicLength + 1 > length) {
-    //     syslog(LOG_ERR, "SUBSCRIBE topic filter length exceeds packet size");
-    //     return;
-    // }
+    if (offset + topicLength + 1 > packetEnd) {
+        syslog(LOG_ERR, "SUBSCRIBE topic filter length exceeds packet size");
+        return;
+    }
 
     char topic[256];
     uint16_t safeLength = topicLength < 255 ? topicLength : 255;
@@ -284,8 +284,8 @@ bool sendConnack(struct mqttClient* client, uint8_t reasonCode) {
     return true;
 }
 
-void readPublish(uint8_t* buffer, uint32_t length, uint32_t offset) {
-    if (offset + 2 > length) {
+void readPublish(uint8_t* buffer, uint32_t packetEnd, uint32_t offset) {
+    if (offset + 2 > packetEnd) {
         syslog(LOG_ERR, "PUBLISH packet too short for topic length");
         return;
     }
@@ -293,7 +293,7 @@ void readPublish(uint8_t* buffer, uint32_t length, uint32_t offset) {
     uint16_t topicLen = (buffer[offset] << 8) | buffer[offset + 1];
     offset += 2;
 
-    if (offset + topicLen > length) {
+    if (offset + topicLen > packetEnd) {
         syslog(LOG_ERR, "PUBLISH topic exceeds packet bounds");
         return;
     }
@@ -304,12 +304,12 @@ void readPublish(uint8_t* buffer, uint32_t length, uint32_t offset) {
 
     uint8_t qos = (buffer[0] & 0b00000110) >> 1;
     if (qos > 0) {
-        if (offset + 2 > length) return;
+        if (offset + 2 > packetEnd) return;
         offset += 2; // packet id (don't care)
     }
 
     uint32_t varint;
-    bool decodeSuccess = decodeVarint(buffer, length, &offset, &varint);
+    bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
     if(!decodeSuccess) {
         return;
     }
@@ -318,17 +318,17 @@ void readPublish(uint8_t* buffer, uint32_t length, uint32_t offset) {
     offset += varint;
 
     // Remaining is payload
-    if (offset >= length) return;
+    if (offset >= packetEnd) return;
 
-    uint32_t payloadLen = length - offset;
+    uint32_t payloadLen = packetEnd - offset;
     char payload[512] = {0};
     memcpy(payload, &buffer[offset], payloadLen < 511 ? payloadLen : 511);
 
     syslog(LOG_INFO, "PUBLISH received. Topic: %s, Payload: %s, QoS: %d", topic, payload, qos);
 }
 
-void readUnsubscribe(uint8_t* buffer, uint32_t length, uint32_t offset) {
-    if (offset + 2 > length) {
+void readUnsubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset) {
+    if (offset + 2 > packetEnd) {
         syslog(LOG_ERR, "UNSUBSCRIBE packet too short");
         return;
     }
@@ -337,7 +337,7 @@ void readUnsubscribe(uint8_t* buffer, uint32_t length, uint32_t offset) {
     offset += 2;
 
     uint32_t varint;
-    bool decodeSuccess = decodeVarint(buffer, length, &offset, &varint);
+    bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
     if(!decodeSuccess) {
         return;
     }
@@ -345,11 +345,11 @@ void readUnsubscribe(uint8_t* buffer, uint32_t length, uint32_t offset) {
     // Skip properties
     offset += varint;
 
-    while (offset + 2 <= length) {
+    while (offset + 2 <= packetEnd) {
         uint16_t topicLen = (buffer[offset] << 8) | buffer[offset + 1];
         offset += 2;
 
-        if (offset + topicLen > length) return;
+        if (offset + topicLen > packetEnd) return;
 
         char topic[256] = {0};
         memcpy(topic, &buffer[offset], topicLen < 255 ? topicLen : 255);
@@ -428,52 +428,52 @@ bool sendPublish(struct mqttClient* client, const char* topic, const char* messa
     return true;
 }
 
-void readPubrec(uint8_t* buffer, uint32_t length, uint32_t offset, struct mqttClient* client) {
+void readPubrec(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqttClient* client) {
     syslog(LOG_INFO, "Received PUBREC for fd=%d", client->fd);
-    // if (offset + 2 > length) {
-    //     syslog(LOG_ERR, "PUBREC packet too short for Packet Identifier\n");
-    //     return;
-    // }
+    if (offset + 2 > packetEnd) {
+        syslog(LOG_ERR, "PUBREC packet too short for Packet Identifier\n");
+        return;
+    }
 
     // uint16_t packetId = (buffer[offset] << 8) | buffer[offset + 1];
     offset += 2;
     // syslog(LOG_INFO, "PUBREC Packet ID: %u\n", packetId);
 
-    // if (offset >= length) {
-    //     return;
-    // }
+    if (offset >= packetEnd) {
+        return;
+    }
     uint8_t reasonCode = buffer[offset++];
     syslog(LOG_INFO, "PUBREC Reason Code: 0x%02X\n", reasonCode);
 
-    // if (offset >= length) {
-    //     return;
-    // }
+    if (offset >= packetEnd) {
+        return;
+    }
 
     uint32_t varint;
-    bool decodeSuccess = decodeVarint(buffer, length, &offset, &varint);
+    bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
     if(!decodeSuccess) {
         return;
     }
 
-    if (offset + varint > length) {
+    if (offset + varint > packetEnd) {
         return;
     }
 
     uint32_t propsEnd = offset + varint;
-    while (offset < propsEnd && offset < length) {
+    while (offset < propsEnd && offset < packetEnd) {
         uint8_t propId = buffer[offset++];
         switch (propId) {
             case 0x1F: {  // Reason String
-                // if (offset + 2 > propsEnd) {
-                //     syslog(LOG_ERR, "Malformed Reason String in PUBREC");
-                //     return;
-                // }
+                if (offset + 2 > propsEnd) {
+                    syslog(LOG_ERR, "Malformed Reason String in PUBREC");
+                    return;
+                }
                 uint16_t strLen = (buffer[offset] << 8) | buffer[offset + 1];
                 offset += 2;
-                // if (offset + strLen > propsEnd) {
-                //     syslog(LOG_ERR, "Truncated Reason String in PUBREC");
-                //     return;
-                // }
+                if (offset + strLen > propsEnd) {
+                    syslog(LOG_ERR, "Truncated Reason String in PUBREC");
+                    return;
+                }
                 char reasonStr[256] = {0};
                 uint16_t copyLen = strLen < 255 ? strLen : 255;
                 memcpy(reasonStr, &buffer[offset], copyLen);
@@ -513,7 +513,6 @@ void readPubrec(uint8_t* buffer, uint32_t length, uint32_t offset, struct mqttCl
     }
 }
 
-// TODO: untested
 bool sendPubrel(struct mqttClient* client, uint16_t packetId) {
     uint8_t fixedHeader[6];
     size_t offset = 0;
@@ -536,9 +535,9 @@ bool sendPubrel(struct mqttClient* client, uint16_t packetId) {
     return true;
 }
 
-void readPubcomp(uint8_t* buffer, uint32_t length, uint32_t offset, struct mqttClient* client) {
+void readPubcomp(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqttClient* client) {
     // syslog(LOG_INFO, "Received PUBCOMP");
-    if (offset + 2 > length) {
+    if (offset + 2 > packetEnd) {
         syslog(LOG_ERR, "PUBCOMP packet too short for Packet Identifier");
         return;
     }
@@ -598,7 +597,7 @@ enum Request determineRequest(uint8_t firstByte) {
 }
 
 void calculateTotalPacketLengths(uint8_t *buffer, uint32_t bytesWrittenToBuffer,
-                                 uint32_t *packetLengths, uint32_t *packetOffsets,
+                                 uint32_t *packetLengths, uint32_t *packetStarts,
                                  uint32_t *packetCount) {
     *packetCount = 0;
     uint32_t offset = 0;
@@ -606,11 +605,10 @@ void calculateTotalPacketLengths(uint8_t *buffer, uint32_t bytesWrittenToBuffer,
     while (offset < bytesWrittenToBuffer) {
         if (bytesWrittenToBuffer - offset < 2) {
             syslog(LOG_INFO, "CALCULATE: Not enough data for fixed header");
-            break;  // Not enough data for fixed header
+            break; 
         }
 
         if (*packetCount == MAX_PACKETS_PER_CLIENTS) {
-            // Optionally handle max packet count reached
             syslog(LOG_INFO, "CALCULATE: Max count reached");
             break;
         }
@@ -619,7 +617,7 @@ void calculateTotalPacketLengths(uint8_t *buffer, uint32_t bytesWrittenToBuffer,
         uint32_t multiplier = 1;
         uint32_t encodedBytes = 0;
 
-        // Parse the variable-length Remaining Length field (max 4 bytes)
+        // varint
         for (int i = 0; i < 4; i++) {
             if (offset + 1 + i >= bytesWrittenToBuffer) {
                 syslog(LOG_INFO, "CALCULATE: Not enough data to finish varint");
@@ -640,10 +638,10 @@ void calculateTotalPacketLengths(uint8_t *buffer, uint32_t bytesWrittenToBuffer,
         uint32_t totalPacketLength = headerLengths + remainingLength;
 
         if (bytesWrittenToBuffer - offset >= totalPacketLength) {
-            packetLengths[*packetCount] = totalPacketLength; // Increment with previous packet length (and maybe also variableheaderoffset)
-            packetOffsets[*packetCount] = offset + headerLengths;
+            packetLengths[*packetCount] = totalPacketLength;
+            packetStarts[*packetCount] = offset + headerLengths;
             syslog(LOG_INFO, "Packet %u: total length = %u, variable header offset = %u",
-                *packetCount, totalPacketLength, variableHeaderOffsets[*packetCount]);
+                *packetCount, totalPacketLength, packetStarts[*packetCount]);
             (*packetCount)++;
             offset += totalPacketLength;
         } else {
@@ -738,7 +736,7 @@ int main() {
             } else {
                 struct mqttClient* client = lookupClient(currentFd);
                 ssize_t bytesRead = read(currentFd,
-                          client->buffer + client->bytesWrittenToBuffer,
+                          client->buffer + client->bytesWrittenToBuffer, // Avoid overwriting existing data
                           sizeof(client->buffer) - client->bytesWrittenToBuffer);
 
                 if(bytesRead < 0) {
@@ -752,70 +750,74 @@ int main() {
 
                 client->bytesWrittenToBuffer += bytesRead;
 
-                uint32_t packetLengths[MAX_PACKETS_PER_CLIENTS];
-                uint32_t packetOffsets[MAX_PACKETS_PER_CLIENTS];
+                uint32_t packetLengths[MAX_PACKETS_PER_CLIENTS]; // Length of each packet
+                uint32_t packetStarts[MAX_PACKETS_PER_CLIENTS]; // Points to the start of each packet, after the header values
                 uint32_t packetCount = 0;
 
                 calculateTotalPacketLengths(client->buffer, client->bytesWrittenToBuffer,
-                            packetLengths, packetOffsets, &packetCount);
+                            packetLengths, packetStarts, &packetCount);
                 
-                uint32_t packetOffset = 0;
+                uint32_t processedPackets = 0;
                 for (uint32_t i = 0; i < packetCount; i++) {
                     printf("current package: %d\n", i);
-                    uint32_t totalPacketLength = packetLengths[i];
-                    uint32_t variableHeaderOffset = packetOffsets[i];
+                    uint32_t packetLength = packetLengths[i];
+                    uint32_t packetStart = packetStarts[i];
+                    uint32_t packetEnd = packetStart + packetLength;
                     
-                    if (totalPacketLength == 0 || packetOffset + totalPacketLength > client->bytesWrittenToBuffer) {
+                    if (packetLength == 0 || processedPackets + packetLength > client->bytesWrittenToBuffer) {
                         syslog(LOG_INFO, "Incomplete packet in for-loop");
                         break; // Incomplete packet
                     }
 
                     client->lastActivityMs = now;
-                    enum Request request = determineRequest(client->buffer[packetOffset]);
+                    enum Request request = determineRequest(client->buffer[processedPackets]);
 
                     switch (request) {
                         case CONNECT:
-                            uint8_t reasonCodeConn = readConnreq(client->buffer, totalPacketLength, variableHeaderOffset, client);
+                            uint8_t reasonCodeConn = readConnreq(client->buffer, packetEnd, packetStart, client);
                             bool ackSuccess = sendConnack(client, reasonCodeConn);
                             if(!ackSuccess) {
+                                syslog(LOG_INFO, "Disconnecting client due to CONNACK failure");
                                 disconnectClient(client, epollfd, now);
                                 break;
                             }
                             break;
                         case SUBSCRIBE:
-                            readSubscribe(client->buffer, totalPacketLength, variableHeaderOffset);
+                            readSubscribe(client->buffer, packetEnd, packetStart);
                             break;
                         case PUBREC:
-                            readPubrec(client->buffer, totalPacketLength, variableHeaderOffset, client);
+                            readPubrec(client->buffer, packetEnd, packetStart, client);
                             break;
                         case PUBLISH:
-                            readPublish(client->buffer, totalPacketLength, variableHeaderOffset);
+                            readPublish(client->buffer, packetEnd, packetStart);
                             break;
                         case PUBCOMP:
-                            readPubcomp(client->buffer, totalPacketLength, variableHeaderOffset, client);
+                            readPubcomp(client->buffer, packetEnd, packetStart, client);
                             sendPublish(client, "$SYS/credentials", "username=admin123 password=admin321");
                             break;
                         case UNSUBSCRIBE:
-                            readUnsubscribe(client->buffer, totalPacketLength, variableHeaderOffset);
+                            readUnsubscribe(client->buffer, packetEnd, packetStart);
                             break;
                         case PING:
                             bool pingSuccess = sendPingresp(client);
                             if(!pingSuccess){
+                                syslog(LOG_INFO, "Disconnecting client due to ping failure");
                                 disconnectClient(client, epollfd, now);
                                 break;
                             }
                             break;
                         case DISCONNECT:
+                            syslog(LOG_INFO, "Disconnecting client due to receiving DISCONNECT");
                             disconnectClient(client, epollfd, now);
                             break;
                         default:
                             break;
                     }
-                    packetOffset += totalPacketLength;
+                    processedPackets += packetLength;
                 }
-                uint32_t leftover = client->bytesWrittenToBuffer - packetOffset;
+                uint32_t leftover = client->bytesWrittenToBuffer - processedPackets;
                 if (leftover > 0) {
-                    memmove(client->buffer, client->buffer + packetOffset, leftover);
+                    memmove(client->buffer, client->buffer + processedPackets, leftover);
                 }
                 client->bytesWrittenToBuffer = leftover;
             }
@@ -823,20 +825,21 @@ int main() {
         }
         
         // Detect dead clients and disconnect them
-        // for (struct mqttClient *c = clients, *tmp = NULL; c != NULL; c = tmp) {
-        //     long long timeSinceLastActivityMs = now - c->lastActivityMs;
-        //     tmp = c->hh.next;
-        //     if ((now - c->lastPubrelMs > PUBREL_INTERVAL_MS) || (timeSinceLastActivityMs > c->keepAlive * 1400)) {
-        //         bool success = sendPubrel(c, 1234);
-        //         c->lastActivityMs = now;
-        //         c->lastPubrelMs = now;
+        for (struct mqttClient *c = clients, *tmp = NULL; c != NULL; c = tmp) {
+            long long timeSinceLastActivityMs = now - c->lastActivityMs;
+            tmp = c->hh.next;
+            if ((now - c->lastPubrelMs > PUBREL_INTERVAL_MS) || (timeSinceLastActivityMs > c->keepAlive * 1400)) {
+                bool success = sendPubrel(c, 1234);
+                c->lastActivityMs = now;
+                c->lastPubrelMs = now;
 
-        //         if(!success) {
-        //             disconnectClient(c, epollfd, now);
-        //             continue;
-        //         }
-        //     }
-        // }
+                if(!success) {
+                    syslog(LOG_INFO, "Disconnecting client due to inactivity");
+                    disconnectClient(c, epollfd, now);
+                    continue;
+                }
+            }
+        }
     }
 
     closelog();
