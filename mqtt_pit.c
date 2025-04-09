@@ -52,10 +52,10 @@ bool decodeVarint(const uint8_t* buffer, uint32_t length, uint32_t* offset, uint
     int bytesRead = 0;
 
     do {
-        if (*offset >= length) {
-            syslog(LOG_ERR, "Incomplete variable byte integer");
-            return false;
-        }
+        // if (*offset >= length) {
+        //     syslog(LOG_ERR, "Incomplete variable byte integer");
+        //     return false;
+        // }
         byte = buffer[(*offset)++];
         result += (byte & 0b01111111) * multiplier;
         multiplier *= 128;
@@ -192,10 +192,10 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t length, uint32_t offset, struct mq
 
 void readSubscribe(uint8_t* buffer, uint32_t length, uint32_t offset) {
     syslog(LOG_INFO, "Reading SUBSCRIBE request");
-    if (offset + 2 > length) {
-        syslog(LOG_ERR, "SUBSCRIBE request too short for fixed header");
-        return;
-    }
+    // if (offset + 2 > length) {
+    //     syslog(LOG_ERR, "SUBSCRIBE request too short for fixed header");
+    //     return;
+    // }
 
     // *packetId = (buffer[offset] << 8) | buffer[offset + 1];
     offset += 2; // packetId
@@ -203,24 +203,25 @@ void readSubscribe(uint8_t* buffer, uint32_t length, uint32_t offset) {
     uint32_t varint;
     bool decodeSuccess = decodeVarint(buffer, length, &offset, &varint);
     if(!decodeSuccess) {
+        syslog(LOG_INFO, "Failed decoding varint");
         return;
     }
 
     // parse actual properties here if needed
     offset += varint;
 
-    if (offset + 3 > length) { // 2 bytes topic + 1 byte options
-        syslog(LOG_ERR, "SUBSCRIBE topic section too short");
-        return;
-    }
+    // if (offset + 3 > length) { // 2 bytes topic + 1 byte options
+    //     syslog(LOG_ERR, "SUBSCRIBE topic section too short");
+    //     return;
+    // }
 
     uint16_t topicLength = (buffer[offset] << 8) | buffer[offset + 1];
     offset += 2;
 
-    if (offset + topicLength + 1 > length) {
-        syslog(LOG_ERR, "SUBSCRIBE topic filter length exceeds packet size");
-        return;
-    }
+    // if (offset + topicLength + 1 > length) {
+    //     syslog(LOG_ERR, "SUBSCRIBE topic filter length exceeds packet size");
+    //     return;
+    // }
 
     char topic[256];
     uint16_t safeLength = topicLength < 255 ? topicLength : 255;
@@ -429,24 +430,24 @@ bool sendPublish(struct mqttClient* client, const char* topic, const char* messa
 
 void readPubrec(uint8_t* buffer, uint32_t length, uint32_t offset, struct mqttClient* client) {
     syslog(LOG_INFO, "Received PUBREC for fd=%d", client->fd);
-    if (offset + 2 > length) {
-        syslog(LOG_ERR, "PUBREC packet too short for Packet Identifier\n");
-        return;
-    }
+    // if (offset + 2 > length) {
+    //     syslog(LOG_ERR, "PUBREC packet too short for Packet Identifier\n");
+    //     return;
+    // }
 
     // uint16_t packetId = (buffer[offset] << 8) | buffer[offset + 1];
     offset += 2;
     // syslog(LOG_INFO, "PUBREC Packet ID: %u\n", packetId);
 
-    if (offset >= length) {
-        return;
-    }
+    // if (offset >= length) {
+    //     return;
+    // }
     uint8_t reasonCode = buffer[offset++];
     syslog(LOG_INFO, "PUBREC Reason Code: 0x%02X\n", reasonCode);
 
-    if (offset >= length) {
-        return;
-    }
+    // if (offset >= length) {
+    //     return;
+    // }
 
     uint32_t varint;
     bool decodeSuccess = decodeVarint(buffer, length, &offset, &varint);
@@ -463,16 +464,16 @@ void readPubrec(uint8_t* buffer, uint32_t length, uint32_t offset, struct mqttCl
         uint8_t propId = buffer[offset++];
         switch (propId) {
             case 0x1F: {  // Reason String
-                if (offset + 2 > propsEnd) {
-                    syslog(LOG_ERR, "Malformed Reason String in PUBREC");
-                    return;
-                }
+                // if (offset + 2 > propsEnd) {
+                //     syslog(LOG_ERR, "Malformed Reason String in PUBREC");
+                //     return;
+                // }
                 uint16_t strLen = (buffer[offset] << 8) | buffer[offset + 1];
                 offset += 2;
-                if (offset + strLen > propsEnd) {
-                    syslog(LOG_ERR, "Truncated Reason String in PUBREC");
-                    return;
-                }
+                // if (offset + strLen > propsEnd) {
+                //     syslog(LOG_ERR, "Truncated Reason String in PUBREC");
+                //     return;
+                // }
                 char reasonStr[256] = {0};
                 uint16_t copyLen = strLen < 255 ? strLen : 255;
                 memcpy(reasonStr, &buffer[offset], copyLen);
@@ -597,18 +598,20 @@ enum Request determineRequest(uint8_t firstByte) {
 }
 
 void calculateTotalPacketLengths(uint8_t *buffer, uint32_t bytesWrittenToBuffer,
-                                 uint32_t *packetLengths, uint32_t *variableHeaderOffsets,
+                                 uint32_t *packetLengths, uint32_t *packetOffsets,
                                  uint32_t *packetCount) {
     *packetCount = 0;
     uint32_t offset = 0;
 
     while (offset < bytesWrittenToBuffer) {
         if (bytesWrittenToBuffer - offset < 2) {
+            syslog(LOG_INFO, "CALCULATE: Not enough data for fixed header");
             break;  // Not enough data for fixed header
         }
 
-        if(*packetCount == MAX_PACKETS_PER_CLIENTS) {
-            // Disconnect client?
+        if (*packetCount == MAX_PACKETS_PER_CLIENTS) {
+            // Optionally handle max packet count reached
+            syslog(LOG_INFO, "CALCULATE: Max count reached");
             break;
         }
 
@@ -619,7 +622,8 @@ void calculateTotalPacketLengths(uint8_t *buffer, uint32_t bytesWrittenToBuffer,
         // Parse the variable-length Remaining Length field (max 4 bytes)
         for (int i = 0; i < 4; i++) {
             if (offset + 1 + i >= bytesWrittenToBuffer) {
-                return;  // Not enough data to finish varint
+                syslog(LOG_INFO, "CALCULATE: Not enough data to finish varint");
+                return;
             }
             uint8_t byte = buffer[offset + 1 + i];
             remainingLength += (byte & 0b01111111) * multiplier;
@@ -627,19 +631,24 @@ void calculateTotalPacketLengths(uint8_t *buffer, uint32_t bytesWrittenToBuffer,
             encodedBytes++;
 
             if ((byte & 0b10000000) == 0) {
-                break;  // Finished parsing varint
+                break; 
             }
         }
 
-        uint32_t fixedHeaderLength = 1 + encodedBytes;
-        uint32_t totalPacketLength = fixedHeaderLength + remainingLength;
+        // Fixed header + variable header
+        uint32_t headerLengths = 1 + encodedBytes;
+        uint32_t totalPacketLength = headerLengths + remainingLength;
 
         if (bytesWrittenToBuffer - offset >= totalPacketLength) {
-            packetLengths[*packetCount] = totalPacketLength;
-            variableHeaderOffsets[*packetCount] = offset + fixedHeaderLength;
+            packetLengths[*packetCount] = totalPacketLength; // Increment with previous packet length (and maybe also variableheaderoffset)
+            packetOffsets[*packetCount] = offset + headerLengths;
+            syslog(LOG_INFO, "Packet %u: total length = %u, variable header offset = %u",
+                *packetCount, totalPacketLength, variableHeaderOffsets[*packetCount]);
             (*packetCount)++;
             offset += totalPacketLength;
         } else {
+            syslog(LOG_ERR, "Incomplete packet at offset %u: expected length = %u, available = %u",
+                offset, totalPacketLength, bytesWrittenToBuffer - offset);
             break;  // Incomplete packet
         }
     }
@@ -744,19 +753,20 @@ int main() {
                 client->bytesWrittenToBuffer += bytesRead;
 
                 uint32_t packetLengths[MAX_PACKETS_PER_CLIENTS];
-                uint32_t variableHeaderOffsets[MAX_PACKETS_PER_CLIENTS];
+                uint32_t packetOffsets[MAX_PACKETS_PER_CLIENTS];
                 uint32_t packetCount = 0;
 
                 calculateTotalPacketLengths(client->buffer, client->bytesWrittenToBuffer,
-                            packetLengths, variableHeaderOffsets, &packetCount);
+                            packetLengths, packetOffsets, &packetCount);
                 
                 uint32_t packetOffset = 0;
                 for (uint32_t i = 0; i < packetCount; i++) {
                     printf("current package: %d\n", i);
                     uint32_t totalPacketLength = packetLengths[i];
-                    uint32_t variableHeaderOffset = variableHeaderOffsets[i];
+                    uint32_t variableHeaderOffset = packetOffsets[i];
                     
                     if (totalPacketLength == 0 || packetOffset + totalPacketLength > client->bytesWrittenToBuffer) {
+                        syslog(LOG_INFO, "Incomplete packet in for-loop");
                         break; // Incomplete packet
                     }
 
@@ -766,40 +776,29 @@ int main() {
                     switch (request) {
                         case CONNECT:
                             uint8_t reasonCodeConn = readConnreq(client->buffer, totalPacketLength, variableHeaderOffset, client);
-                            cleanupBuffer(client, totalPacketLength);
                             bool ackSuccess = sendConnack(client, reasonCodeConn);
                             if(!ackSuccess) {
                                 disconnectClient(client, epollfd, now);
                                 break;
                             }
-                            bool pubSuccess = sendPublish(client, "$SYS/confidential", "username=admin password=admin");
-                            if(!pubSuccess) {
-                                disconnectClient(client, epollfd, now);
-                            }
                             break;
                         case SUBSCRIBE:
                             readSubscribe(client->buffer, totalPacketLength, variableHeaderOffset);
-                            cleanupBuffer(client, totalPacketLength);
                             break;
                         case PUBREC:
                             readPubrec(client->buffer, totalPacketLength, variableHeaderOffset, client);
-                            cleanupBuffer(client, totalPacketLength);
                             break;
                         case PUBLISH:
                             readPublish(client->buffer, totalPacketLength, variableHeaderOffset);
-                            cleanupBuffer(client, totalPacketLength);
                             break;
                         case PUBCOMP:
                             readPubcomp(client->buffer, totalPacketLength, variableHeaderOffset, client);
-                            cleanupBuffer(client, totalPacketLength);
                             sendPublish(client, "$SYS/credentials", "username=admin123 password=admin321");
                             break;
                         case UNSUBSCRIBE:
                             readUnsubscribe(client->buffer, totalPacketLength, variableHeaderOffset);
-                            cleanupBuffer(client, totalPacketLength);
                             break;
                         case PING:
-                            cleanupBuffer(client, totalPacketLength);
                             bool pingSuccess = sendPingresp(client);
                             if(!pingSuccess){
                                 disconnectClient(client, epollfd, now);
@@ -814,6 +813,11 @@ int main() {
                     }
                     packetOffset += totalPacketLength;
                 }
+                uint32_t leftover = client->bytesWrittenToBuffer - packetOffset;
+                if (leftover > 0) {
+                    memmove(client->buffer, client->buffer + packetOffset, leftover);
+                }
+                client->bytesWrittenToBuffer = leftover;
             }
             
         }
