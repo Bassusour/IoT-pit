@@ -36,18 +36,19 @@ unsigned char negotiations[][3] = {
 int num_options = sizeof(negotiations) / sizeof(negotiations[0]);
 
 void heartbeatLog() {
-    syslog(LOG_INFO, "Server is running with %d connected clients.", clientQueueTelnet.length);
+    syslog(LOG_INFO, "Server is running with %d connected clients. Number of most concurrent connected clients is %d", clientQueueTelnet.length, statsTelnet.mostConcurrentConnections);
     syslog(LOG_INFO, "Current statistics: wasted time: %lld ms. Total connected clients: %ld", statsTelnet.totalWastedTime, statsTelnet.totalConnects);
 }
 
 void initializeStats(){
     statsTelnet.totalConnects = 0;
     statsTelnet.totalWastedTime = 0;
+    statsTelnet.mostConcurrentConnections = 0;
 }
 
 int main() {
     openlog("telnet_tarpit", LOG_PID | LOG_CONS, LOG_USER);
-    
+    initializeStats();
     signal(SIGPIPE, SIG_IGN); // Ignore 
     queue_init(&clientQueueTelnet);
     
@@ -83,7 +84,7 @@ int main() {
                 int optionIndex = rand() % num_options;
                 ssize_t out = write(c->fd, negotiations[optionIndex], sizeof(negotiations[optionIndex]));
                 
-                if (out <= 0) {
+                if (out == -1) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) { // Avoid blocking
                         c->sendNext = now + DELAY_MS;
                         c->timeConnected += DELAY_MS;
@@ -117,25 +118,32 @@ int main() {
         // Accept new connections
         if (fds.revents & POLLIN) {
             int clientFd = accept(serverSock, (struct sockaddr *)&clientAddr, &addrLen);
-            if (clientFd >= 0) {
-                fcntl(clientFd, F_SETFL, O_NONBLOCK); // Set non-blocking mode
-                struct client* newClient = malloc(sizeof(struct client));
-                if (!newClient) {
-                    syslog(LOG_ERR, "Out of memory");
-                    close(clientFd);
-                    continue;
-                }
-
-                statsTelnet.totalConnects += 1;
-                newClient->fd = clientFd;
-                newClient->sendNext = now + DELAY_MS;
-                newClient->timeConnected = 0;
-                strncpy(newClient->ipaddr, inet_ntoa(clientAddr.sin_addr), INET6_ADDRSTRLEN);
-                queue_append(&clientQueueTelnet, newClient);
-
-                syslog(LOG_INFO,"Accepted connection from %s:%d\n",
-                    inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
+            if(clientFd == -1) {
+                syslog(LOG_ERR, "Failed accepting new client with error %s", strerror(errno));
+                continue;
             }
+
+            fcntl(clientFd, F_SETFL, O_NONBLOCK); // Set non-blocking mode
+            struct client* newClient = malloc(sizeof(struct client));
+            if (!newClient) {
+                syslog(LOG_ERR, "Out of memory");
+                close(clientFd);
+                continue;
+            }
+
+            statsTelnet.totalConnects += 1;
+            newClient->fd = clientFd;
+            newClient->sendNext = now + DELAY_MS;
+            newClient->timeConnected = 0;
+            strncpy(newClient->ipaddr, inet_ntoa(clientAddr.sin_addr), INET6_ADDRSTRLEN);
+            queue_append(&clientQueueTelnet, newClient);
+
+            if(statsTelnet.mostConcurrentConnections < clientQueueTelnet.length) {
+                statsTelnet.mostConcurrentConnections = clientQueueTelnet.length;
+            }
+
+            syslog(LOG_INFO,"Accepted connection from %s\n",
+                inet_ntoa(clientAddr.sin_addr));
         }
     }
 

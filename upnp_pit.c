@@ -67,8 +67,9 @@ const char *FAKE_CHUNK =
     "      </service>\n";
 
 void heartbeatLog() {
-    syslog(LOG_INFO, "Server is running with %d connected clients.", clientQueueUpnp.length);
-    syslog(LOG_INFO, "Current statistics: wasted time: %lld ms. Total connected clients: %ld. Total other requests: %ld", statsUpnp.totalWastedTime, statsUpnp.totalConnects, statsUpnp.otherRequests);
+    syslog(LOG_INFO, "Server is running with %d connected clients. Number of most concurrent connected clients is %d", clientQueueUpnp.length, statsUpnp.mostConcurrentConnections);
+    syslog(LOG_INFO, "Current statistics: wasted time: %lld ms. Total HTTP requests: %ld. Total other HTTP requests: %ld. SSDP responses: %ld. XML requests: %ld", 
+        statsUpnp.totalWastedTime, statsUpnp.totalHttpRequests, statsUpnp.otherHttpRequests, statsUpnp.ssdpResponses, statsUpnp.totalXmlRequests);
 }
 
 // char* getLocalIpAddress(){
@@ -176,8 +177,6 @@ void *ssdpListener(void *arg) {
             continue;
         }
 
-        printf("received %s", buffer);
-
         // Ignore all requests that are not discovery
         if (strstr(buffer, "M-SEARCH") != NULL) {
             char client_ip[INET_ADDRSTRLEN];
@@ -189,6 +188,8 @@ void *ssdpListener(void *arg) {
 
             syslog(LOG_INFO, "Sent fake SSDP response to %s\n", client_ip);
             statsUpnp.ssdpResponses += 1;
+        } else {
+            syslog(LOG_INFO, "Received %s request instead of M-SEARCH", buffer);
         }
     }
 
@@ -231,24 +232,19 @@ void *httpServer(void *arg) {
             if(clientQueueUpnp.head->sendNext <= now){
                 struct client *c = queue_pop(&clientQueueUpnp);
 
-                printf("writing...\n");
-
                 char chunk_size[10];
                 snprintf(chunk_size, sizeof(chunk_size), "%X\r\n", (int)strlen(FAKE_CHUNK));
-                write(c->fd, chunk_size, strlen(chunk_size)); // sizeof is too short
+                write(c->fd, chunk_size, strlen(chunk_size));
                 write(c->fd, FAKE_CHUNK, strlen(FAKE_CHUNK));
                 ssize_t out = write(c->fd, "\r\n", 2);
                 
                 if (out == -1) {
-                    printf("Out is %ld with errno %s\n", out, strerror(errno));
                     if (errno == EAGAIN || errno == EWOULDBLOCK) { // Avoid blocking
-                        printf("blocking detected\n");
                         c->sendNext = now + DELAY_MS;
                         c->timeConnected += DELAY_MS;
                         statsUpnp.totalWastedTime += DELAY_MS;
                         queue_append(&clientQueueUpnp, c);
-                    } else if (errno == EPIPE) {
-                        printf("Logged disconnect\n");
+                    } else {
                         long long timeTrapped = c->timeConnected;
                         syslog(LOG_INFO, "Client disconnected from IP: %s with fd: %d with time %lld",
                             c->ipaddr, c->fd, timeTrapped);
@@ -276,59 +272,64 @@ void *httpServer(void *arg) {
         // Accept new connections
         if (fds.revents & POLLIN) {
             int clientFd = accept(serverSock, (struct sockaddr *)&clientAddr, &addrLen);
-            if (clientFd >= 0) {
-                fcntl(clientFd, F_SETFL, O_NONBLOCK); // Set non-blocking mode
-                struct client* newClient = malloc(sizeof(struct client));
-                if (newClient == NULL) {
-                    syslog(LOG_ERR, "Out of memory");
-                    close(clientFd);
-                    continue;
-                }
+            if(clientFd == -1) {
+                syslog(LOG_ERR, "Failed accepting new client with error %s", strerror(errno));
+                continue;
+            }
+            statsUpnp.totalHttpRequests += 1;
+            fcntl(clientFd, F_SETFL, O_NONBLOCK); // Set non-blocking mode
+            struct client* newClient = malloc(sizeof(struct client));
+            if (newClient == NULL) {
+                syslog(LOG_ERR, "Out of memory");
+                close(clientFd);
+                continue;
+            }
 
-                char buffer[1024];
-                memset(buffer, 0, 1024);
-                read(clientFd, buffer, 1024-1);
-                char method[10], url[256];
-                sscanf(buffer, "%9s %255s", method, url);
+            char buffer[1024];
+            memset(buffer, 0, 1024);
+            read(clientFd, buffer, 1024-1);
+            char method[10], url[256];
+            sscanf(buffer, "%9s %255s", method, url);
 
-                if (strcmp(url, "/hue-device.xml") == 0 && strcmp(method, "GET") == 0) {
-                    char responseHeader[] =
-                        "HTTP/1.1 200 OK\r\n"
-                        "Transfer-Encoding: chunked\r\n"
-                        "Trailer: X-Checksum\r\n"
-                        "\r\n";
-                    
-                    ssize_t out = write(clientFd, responseHeader, strlen(responseHeader));
-                    if(out <= 0){
-                        syslog(LOG_ERR, "failed to write response header to %s:%d\n", 
-                            inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
-                        close(clientFd);
-                        free(newClient);
-                        continue;
-                    }
-
-                    statsUpnp.totalConnects += 1;
-                    newClient->fd = clientFd;
-                    newClient->sendNext = now + DELAY_MS;
-                    newClient->timeConnected = 0;
-                    snprintf(newClient->ipaddr, sizeof(newClient->ipaddr), "%s", inet_ntoa(clientAddr.sin_addr));
-                    queue_append(&clientQueueUpnp, newClient);
-
-                    syslog(LOG_INFO,"Accepted GET request from from %s:%d\n",
-                        inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
-                    // printf("Accepted GET request from from %s:%d\n",
-                    //     inet_ntoa(clientAddr.sin_addr), ntohs(clientAddr.sin_port));
-                // Ignore requests without a method or url
-                // } else if (strcmp(method, "") == 0 || strcmp(url, "")) {
-                //     continue;
-                } else {
-                    statsUpnp.otherRequests += 1;
-                    syslog(LOG_INFO, "Received %s request with %s url", method, url);
-                    // printf("Received %s request with %s url\n", method, url);
+            if (strcmp(url, "/hue-device.xml") == 0 && strcmp(method, "GET") == 0) {
+                statsUpnp.totalXmlRequests += 1;
+                char responseHeader[] =
+                    "HTTP/1.1 200 OK\r\n"
+                    "Transfer-Encoding: chunked\r\n"
+                    "Trailer: X-Checksum\r\n"
+                    "\r\n";
+                
+                ssize_t out = write(clientFd, responseHeader, strlen(responseHeader));
+                if(out <= 0){
+                    syslog(LOG_ERR, "failed to write response header to %s\n", 
+                        inet_ntoa(clientAddr.sin_addr));
                     close(clientFd);
                     free(newClient);
                     continue;
                 }
+
+                
+                newClient->fd = clientFd;
+                newClient->sendNext = now + DELAY_MS;
+                newClient->timeConnected = 0;
+                snprintf(newClient->ipaddr, sizeof(newClient->ipaddr), "%s", inet_ntoa(clientAddr.sin_addr));
+                queue_append(&clientQueueUpnp, newClient);
+
+                if(statsUpnp.mostConcurrentConnections < clientQueueUpnp.length) {
+                    statsUpnp.mostConcurrentConnections = clientQueueUpnp.length;
+                }
+
+                syslog(LOG_INFO,"Accepted GET request from from %s\n",
+                    inet_ntoa(clientAddr.sin_addr));
+            // Ignore requests without a method or url
+            // } else if (strcmp(method, "") == 0 || strcmp(url, "")) {
+            //     continue;
+            } else {
+                statsUpnp.otherHttpRequests += 1;
+                syslog(LOG_INFO, "Received %s request with %s url. Disconnecting client...", method, url);
+                close(clientFd);
+                free(newClient);
+                continue;
             }
         }
     }
@@ -339,10 +340,12 @@ void *httpServer(void *arg) {
 }
 
 void initializeStats(){
-    statsUpnp.totalConnects = 0;
     statsUpnp.totalWastedTime = 0;
-    statsUpnp.otherRequests = 0;
+    statsUpnp.otherHttpRequests = 0;
     statsUpnp.ssdpResponses = 0;
+    statsUpnp.mostConcurrentConnections = 0;
+    statsUpnp.totalHttpRequests = 0;
+    statsUpnp.totalXmlRequests = 0;
 }
 
 int main() {

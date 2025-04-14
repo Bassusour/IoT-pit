@@ -10,6 +10,7 @@ struct queue clientQueueTelnet;
 struct queue clientQueueUpnp;
 struct telnetStatistics statsTelnet;
 struct upnpStatistics statsUpnp;
+struct mqttStatistics statsMqtt;
 
 void queue_init(struct queue *q) {
     q->head = q->tail = NULL;

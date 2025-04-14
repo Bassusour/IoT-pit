@@ -38,22 +38,27 @@ extern struct queue clientQueueUpnp;
 struct telnetStatistics {
     unsigned long totalConnects;
     unsigned long long totalWastedTime;
+    int mostConcurrentConnections;
 };
 
 struct upnpStatistics {
-    unsigned long totalConnects;
+    unsigned long totalHttpRequests;
+    unsigned long totalXmlRequests;
     unsigned long long totalWastedTime;
-    unsigned long otherRequests;
+    unsigned long otherHttpRequests;
     unsigned long ssdpResponses;
+    int mostConcurrentConnections;
 };
 
 struct mqttStatistics {
     unsigned long totalConnects;
     unsigned long long totalWastedTime;
+    uint16_t mostConcurrentConnections;
 };
 
 extern struct telnetStatistics statsTelnet;
 extern struct upnpStatistics statsUpnp;
+extern struct mqttStatistics statsMqtt;
 
 /**
  * @brief Initializes a queue.

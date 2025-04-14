@@ -16,13 +16,12 @@
 #include <sys/socket.h>
 #include "structs.h"
 
-#define PORT 1884 // Remember to change to 1883
-#define MAX_FDS 1024
-#define MAX_EVENTS 10
-#define TIMEOUT_INTERVAL_MS 5000
+#define PORT 1884 // TODO: Remember to change to 1883
+#define MAX_EVENTS 1024
+#define EPOLL_TIMEOUT_INTERVAL_MS 5000
 #define PUBREL_INTERVAL_MS 10000
 #define HEARTBEAT_INTERVAL_MS 10000
-#define MAX_PACKETS_PER_CLIENTS 70
+#define MAX_PACKETS_PER_CLIENTS 50
 
 struct mqttClient* clients = NULL;
 
@@ -42,7 +41,14 @@ void deleteClient(struct mqttClient* client) {
 }
 
 void heartbeatLog() {
-    syslog(LOG_INFO, "Server is running with %d connected clients.", HASH_COUNT(clients));
+    syslog(LOG_INFO, "Server is running with %d connected clients. Number of most concurrent connected clients is %d", HASH_COUNT(clients), statsMqtt.mostConcurrentConnections);
+    syslog(LOG_INFO, "The total amount of wasted time is %lld", statsMqtt.totalWastedTime);
+}
+
+void initializeStats(){
+    statsMqtt.totalConnects = 0;
+    statsMqtt.totalWastedTime = 0;
+    statsMqtt.mostConcurrentConnections = 0;
 }
 
 bool decodeVarint(const uint8_t* buffer, uint32_t packetEnd, uint32_t* offset, uint32_t* value) {
@@ -400,7 +406,7 @@ bool sendPublish(struct mqttClient* client, const char* topic, const char* messa
     offset += topicLength;
 
     // Big endian packetId
-    static uint16_t packetId = 1234; // TODO: Random id generator
+    static uint16_t packetId = 1234;
     packet[offset++] = packetId >> 8;
     packet[offset++] = packetId & 0xFF;
 
@@ -409,15 +415,10 @@ bool sendPublish(struct mqttClient* client, const char* topic, const char* messa
     memcpy(packet + offset, message, payloadLength);
     offset += payloadLength;
 
-    // printf("Send publish packet: \n");
-    // for (size_t i = 0; i < packetLength; i++) {
-    //     printf("%02X ", packet[i]);
-    // }
-    // printf("\n");
     ssize_t w = write(client->fd, packet, packetLength);
     free(packet);
     if (w < 0) {
-        syslog(LOG_ERR, "sendPublish: write failed. May retry."); // TODO
+        syslog(LOG_ERR, "sendPublish: write failed. May retry.");
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
             return false;
         }
@@ -563,8 +564,10 @@ bool sendPingresp(struct mqttClient* client) {
 }
 
 void disconnectClient(struct mqttClient* client, int epollFd, long long now){
+    long long wastedTime = now - client->timeOfConnection;
+    statsMqtt.totalWastedTime += wastedTime;
     syslog(LOG_INFO, "Client removed with IP: %s with fd: %d with connected time %lld ms", 
-        client->ipaddr, client->fd, now - client->timeOfConnection);
+        client->ipaddr, client->fd, wastedTime);
     epoll_ctl(epollFd, EPOLL_CTL_DEL, client->fd, NULL);
     deleteClient(client);
     close(client->fd);
@@ -660,7 +663,7 @@ void cleanupBuffer(struct mqttClient* client, uint32_t packetLength){
 
 int main() {
     openlog("mqtt_tarpit", LOG_PID | LOG_CONS, LOG_USER);
-    
+    initializeStats();
     signal(SIGPIPE, SIG_IGN);
     
     int serverSock = createServer(PORT);
@@ -695,23 +698,31 @@ int main() {
             lastHeartbeat = now;
         }
 
-        int nfds = epoll_wait(epollfd, eventsQueue, MAX_EVENTS, TIMEOUT_INTERVAL_MS);
+        int nfds = epoll_wait(epollfd, eventsQueue, MAX_EVENTS, EPOLL_TIMEOUT_INTERVAL_MS);
         if (nfds == -1) {
             syslog(LOG_ERR, "epoll_wait");
             exit(EXIT_FAILURE);
         }
 
-        // Update now, since epoll_wait made the old value outdated. 
+        // Update now, since epoll_wait made the value outdated. 
         now = currentTimeMs();
         for (int n = 0; n < nfds; ++n) {
             int currentFd = eventsQueue[n].data.fd;
             if (currentFd == serverSock) {
                 int clientFd = accept(serverSock, (struct sockaddr *) &clientAddr, &addrLen);
                 if (clientFd == -1) {
-                    syslog(LOG_ERR, "error accepting client");
+                    syslog(LOG_ERR, "Failed accepting new client with error %s", strerror(errno));
                     continue;
                 }
                 struct mqttClient* newClient = malloc(sizeof(struct mqttClient));
+                if (newClient == NULL) {
+                    syslog(LOG_ERR, "Out of memory");
+                    close(clientFd);
+                    continue;
+                }
+
+                
+                statsMqtt.totalConnects += 1;
                 newClient->fd = clientFd;
                 strncpy(newClient->ipaddr, inet_ntoa(clientAddr.sin_addr), INET6_ADDRSTRLEN);
                 newClient->bytesWrittenToBuffer = 0;
@@ -727,28 +738,38 @@ int main() {
                 clientEv.events = EPOLLIN;
                 clientEv.data.fd = clientFd;
                 if (epoll_ctl(epollfd, EPOLL_CTL_ADD, clientFd, &clientEv) == -1) {
-                    syslog(LOG_ERR, "Failed adding client to epoll");
+                    syslog(LOG_ERR, "Failed adding client to epoll with error %s", strerror(errno));
+                    close(clientFd);
                     free(newClient);
                     continue;
                 }
-
+                
                 addClient(newClient);
+                if(statsMqtt.mostConcurrentConnections < HASH_COUNT(clients)) {
+                    statsMqtt.mostConcurrentConnections = HASH_COUNT(clients);
+                }
             } else {
                 struct mqttClient* client = lookupClient(currentFd);
                 ssize_t bytesRead = read(currentFd,
                           client->buffer + client->bytesWrittenToBuffer, // Avoid overwriting existing data
                           sizeof(client->buffer) - client->bytesWrittenToBuffer);
 
-                if(bytesRead < 0) {
+                // TODO: Handling of too much data for buffer
+                if(bytesRead <= 0) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) {
                         continue;
                     }
-                    syslog(LOG_ERR, "Failed reading. Disconnecting client.");
+                    syslog(LOG_ERR, "Failed reading. Disconnecting client. error: %s", strerror(errno));
                     disconnectClient(client, epollfd, now);
                     continue;
                 }
 
                 client->bytesWrittenToBuffer += bytesRead;
+
+                if (client->bytesWrittenToBuffer >= sizeof(client->buffer)) {
+                    syslog(LOG_WARNING, "Buffer full. Not reading more data for client fd=%d", currentFd);
+                    continue;
+                }
 
                 uint32_t packetLengths[MAX_PACKETS_PER_CLIENTS]; // Length of each packet
                 uint32_t packetStarts[MAX_PACKETS_PER_CLIENTS]; // Points to the start of each packet, after the header values
@@ -759,13 +780,12 @@ int main() {
                 
                 uint32_t processedPackets = 0;
                 for (uint32_t i = 0; i < packetCount; i++) {
-                    printf("current package: %d\n", i);
                     uint32_t packetLength = packetLengths[i];
                     uint32_t packetStart = packetStarts[i];
                     uint32_t packetEnd = packetStart + packetLength;
                     
                     if (packetLength == 0 || processedPackets + packetLength > client->bytesWrittenToBuffer) {
-                        syslog(LOG_INFO, "Incomplete packet in for-loop");
+                        syslog(LOG_INFO, "Incomplete packet");
                         break; // Incomplete packet
                     }
 
@@ -793,7 +813,11 @@ int main() {
                             break;
                         case PUBCOMP:
                             readPubcomp(client->buffer, packetEnd, packetStart, client);
-                            sendPublish(client, "$SYS/credentials", "username=admin123 password=admin321");
+                            bool pubSuccess = sendPublish(client, "$SYS/credentials", "username=admin123 password=admin321");
+                            if(!pubSuccess) {
+                                syslog(LOG_INFO, "Disconnecting client due to publish failure");
+                                disconnectClient(client, epollfd, now);
+                            }
                             break;
                         case UNSUBSCRIBE:
                             readUnsubscribe(client->buffer, packetEnd, packetStart);
