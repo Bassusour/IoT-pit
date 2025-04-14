@@ -92,4 +92,9 @@ int createServer(int port);
  */
 long long currentTimeMs();
 
+/**
+ * @return Sets the maximum number of fd's
+ */
+void setFdLimit(int limit);
+
 #endif

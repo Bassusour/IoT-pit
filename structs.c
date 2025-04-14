@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <limits.h>
 #include <time.h>
+#include <sys/resource.h>
 #include "structs.h"
 
 struct queue clientQueueTelnet;
@@ -92,4 +93,11 @@ long long currentTimeMs() {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
+}
+
+void setFdLimit(int limit) {
+    struct rlimit rl;
+    rl.rlim_cur = limit;
+    rl.rlim_max = limit;
+    setrlimit(RLIMIT_NOFILE, &rl);
 }

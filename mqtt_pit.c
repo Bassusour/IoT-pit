@@ -16,12 +16,13 @@
 #include <sys/socket.h>
 #include "structs.h"
 
-#define PORT 1884 // TODO: Remember to change to 1883
+#define PORT 1883
 #define MAX_EVENTS 1024
 #define EPOLL_TIMEOUT_INTERVAL_MS 5000
 #define PUBREL_INTERVAL_MS 10000
 #define HEARTBEAT_INTERVAL_MS 10000
 #define MAX_PACKETS_PER_CLIENTS 50
+#define FD_LIMIT 4096
 
 struct mqttClient* clients = NULL;
 
@@ -78,7 +79,7 @@ bool decodeVarint(const uint8_t* buffer, uint32_t packetEnd, uint32_t* offset, u
 }
 
 uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqttClient* client){
-    syslog(LOG_INFO, "Reading CONNECT request");
+    // syslog(LOG_INFO, "Reading CONNECT request");
     if (offset + 2 > packetEnd) {
         syslog(LOG_ERR, "CONNECT request too small for fixed header");
         return 0x80; // Unspecified error
@@ -168,7 +169,7 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
         uint16_t safeLength = user_len < 255 ? user_len : 255;
         memcpy(username, &buffer[offset], safeLength);
         offset += user_len;
-        syslog(LOG_INFO, "Username: %s\n", username);
+        // syslog(LOG_INFO, "Username: %s\n", username);
     }
 
     // Password
@@ -189,7 +190,7 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
         uint16_t safeLength = passwordLength < 255 ? passwordLength : 255;
         memcpy(password, &buffer[offset], safeLength);
         offset += passwordLength;
-        syslog(LOG_INFO, "Password: %s\n", password);
+        // syslog(LOG_INFO, "Password: %s\n", password);
     }
 
     syslog(LOG_INFO, "Successfully read CONNECT request with keep-alive: %d username: %s password: %s", keepAlive, username, password);
@@ -197,7 +198,7 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
 }
 
 void readSubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset) {
-    syslog(LOG_INFO, "Reading SUBSCRIBE request");
+    // syslog(LOG_INFO, "Reading SUBSCRIBE request");
     if (offset + 2 > packetEnd) {
         syslog(LOG_ERR, "SUBSCRIBE request too short for fixed header");
         return;
@@ -209,7 +210,7 @@ void readSubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset) {
     uint32_t varint;
     bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
     if(!decodeSuccess) {
-        syslog(LOG_INFO, "Failed decoding varint");
+        syslog(LOG_INFO, "SUBSCRIBE Failed decoding varint");
         return;
     }
 
@@ -643,8 +644,8 @@ void calculateTotalPacketLengths(uint8_t *buffer, uint32_t bytesWrittenToBuffer,
         if (bytesWrittenToBuffer - offset >= totalPacketLength) {
             packetLengths[*packetCount] = totalPacketLength;
             packetStarts[*packetCount] = offset + headerLengths;
-            syslog(LOG_INFO, "Packet %u: total length = %u, variable header offset = %u",
-                *packetCount, totalPacketLength, packetStarts[*packetCount]);
+            // syslog(LOG_INFO, "Packet %u: total length = %u, variable header offset = %u",
+            //     *packetCount, totalPacketLength, packetStarts[*packetCount]);
             (*packetCount)++;
             offset += totalPacketLength;
         } else {
@@ -754,7 +755,6 @@ int main() {
                           client->buffer + client->bytesWrittenToBuffer, // Avoid overwriting existing data
                           sizeof(client->buffer) - client->bytesWrittenToBuffer);
 
-                // TODO: Handling of too much data for buffer
                 if(bytesRead <= 0) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) {
                         continue;
@@ -767,7 +767,8 @@ int main() {
                 client->bytesWrittenToBuffer += bytesRead;
 
                 if (client->bytesWrittenToBuffer >= sizeof(client->buffer)) {
-                    syslog(LOG_WARNING, "Buffer full. Not reading more data for client fd=%d", currentFd);
+                    syslog(LOG_ERR, "Buffer full. Disconnecting client.");
+                    disconnectClient(client, epollfd, now);
                     continue;
                 }
 

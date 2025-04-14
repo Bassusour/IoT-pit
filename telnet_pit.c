@@ -16,7 +16,8 @@
 
 #define PORT 23
 #define DELAY_MS 100
-#define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
+#define HEARTBEAT_INTERVAL_MS 10000 // 10 minutes
+#define FD_LIMIT 4096
 
 #define IAC 255
 #define DO 253
@@ -49,6 +50,7 @@ void initializeStats(){
 int main() {
     openlog("telnet_tarpit", LOG_PID | LOG_CONS, LOG_USER);
     initializeStats();
+    setFdLimit(FD_LIMIT);
     signal(SIGPIPE, SIG_IGN); // Ignore 
     queue_init(&clientQueueTelnet);
     
@@ -110,6 +112,7 @@ int main() {
         }
         
         int pollResult = poll(&fds, 1, timeout);
+        now = currentTimeMs(); // Poll will cause old value to be misrepresenting
         if (pollResult < 0) {
             syslog(LOG_ERR, "Poll error with error %s", strerror(errno));
             continue;

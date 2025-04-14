@@ -20,6 +20,7 @@
 #define DELAY_MS 100
 #define SSDP_MULTICAST "239.255.255.250"
 #define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
+#define FD_LIMIT 4096
     
 // Can use Chunked Transfer Coding from rfc 2616 section 3.6.1
 // Required to be a HTTP GET request (Section 2.1 from specifications)
@@ -158,7 +159,7 @@ void *ssdpListener(void *arg) {
     struct ip_mreq mreq;
     mreq.imr_multiaddr.s_addr = inet_addr(SSDP_MULTICAST);
     mreq.imr_interface.s_addr = INADDR_ANY;
-    setsockopt(sockFd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)); // Maybe IPPROTO_UDP instead
+    setsockopt(sockFd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
 
     if (bind(sockFd, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
         syslog(LOG_ERR, "SSDP Bind failed");
@@ -189,7 +190,7 @@ void *ssdpListener(void *arg) {
             syslog(LOG_INFO, "Sent fake SSDP response to %s\n", client_ip);
             statsUpnp.ssdpResponses += 1;
         } else {
-            syslog(LOG_INFO, "Received %s request instead of M-SEARCH", buffer);
+            syslog(LOG_INFO, "Received instead of M-SEARCH: %s", buffer);
         }
     }
 
@@ -264,6 +265,7 @@ void *httpServer(void *arg) {
         }
 
         int pollResult = poll(&fds, 1, timeout);
+        now = currentTimeMs(); // Poll will cause old value to be misrepresenting
         if (pollResult < 0) {
             syslog(LOG_ERR, "Poll error with error %s", strerror(errno));
             continue;
@@ -351,6 +353,7 @@ void initializeStats(){
 int main() {
     openlog("upnp_tarpit", LOG_PID | LOG_CONS, LOG_USER);
     initializeStats();
+    setFdLimit(FD_LIMIT);
     pthread_t ssdpThread, httpThread;
     pthread_create(&ssdpThread, NULL, ssdpListener, NULL);
     pthread_create(&httpThread, NULL, httpServer, NULL);
