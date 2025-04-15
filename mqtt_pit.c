@@ -437,7 +437,7 @@ void readPubrec(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqt
         return;
     }
 
-    // uint16_t packetId = (buffer[offset] << 8) | buffer[offset + 1];
+    uint16_t packetId = (buffer[offset] << 8) | buffer[offset + 1];
     offset += 2;
     // syslog(LOG_INFO, "PUBREC Packet ID: %u\n", packetId);
 
@@ -445,7 +445,6 @@ void readPubrec(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqt
         return;
     }
     uint8_t reasonCode = buffer[offset++];
-    syslog(LOG_INFO, "PUBREC Reason Code: 0x%02X\n", reasonCode);
 
     if (offset >= packetEnd) {
         return;
@@ -513,6 +512,8 @@ void readPubrec(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqt
                 return;
         }
     }
+
+    syslog(LOG_INFO, "PUBREC packet ID: %d, Reason Code: 0x%02X\n", packetId, reasonCode);
 }
 
 bool sendPubrel(struct mqttClient* client, uint16_t packetId) {
@@ -665,6 +666,7 @@ void cleanupBuffer(struct mqttClient* client, uint32_t packetLength){
 int main() {
     openlog("mqtt_tarpit", LOG_PID | LOG_CONS, LOG_USER);
     initializeStats();
+    setFdLimit(FD_LIMIT);
     signal(SIGPIPE, SIG_IGN);
     
     int serverSock = createServer(PORT);
