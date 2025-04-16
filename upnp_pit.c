@@ -17,7 +17,7 @@
 
 #define SSDP_PORT 1900
 #define HTTP_PORT 8080
-#define DELAY_MS 100
+#define DELAY_MS 300
 #define SSDP_MULTICAST "239.255.255.250"
 #define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
 #define FD_LIMIT 4096
