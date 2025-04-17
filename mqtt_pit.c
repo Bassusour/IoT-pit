@@ -16,7 +16,7 @@
 #include <sys/socket.h>
 #include "structs.h"
 
-#define PORT 1883
+#define PORT 1884
 #define MAX_EVENTS 4096
 #define EPOLL_TIMEOUT_INTERVAL_MS 5000
 #define PUBREL_INTERVAL_MS 10000
@@ -102,7 +102,12 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
         return 0x80;
     }
     uint8_t proto_level = buffer[offset++];
-    if(proto_level != 0b101) {
+    if(proto_level == 0b101) {
+        client->version = V5;
+     } else if (proto_level == 0b100) {
+        syslog(LOG_INFO, "Client connected with v3.1.1");
+        client->version = V311;
+    } else {
         syslog(LOG_ERR, "Unsupported MQTT version: %d", proto_level);
         return 0x01; // Unacceptable protocol version
     }
@@ -128,16 +133,18 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
     client->keepAlive = keepAlive;
     offset += 2;
 
-    // Properties Length (varint)
-    uint32_t varint;
-    bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
-    if(!decodeSuccess) {
-        return 0x80;
-    }
+    if(client->version == V5) {
+        // Properties Length (varint)
+        uint32_t varint;
+        bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
+        if(!decodeSuccess) {
+            return 0x80;
+        }
 
-    uint32_t props_end = offset + varint;
-    while (offset < props_end && offset < packetEnd) {
-        offset++; // Don't parse props, just skip
+        uint32_t props_end = offset + varint;
+        while (offset < props_end && offset < packetEnd) {
+            offset++; // Don't parse props, just skip
+        }
     }
 
     // Payload: Client ID
@@ -197,7 +204,7 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
     return 0x00; // Success
 }
 
-void readSubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset) {
+void readSubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, enum MqttVersion version) {
     // syslog(LOG_INFO, "Reading SUBSCRIBE request");
     if (offset + 2 > packetEnd) {
         syslog(LOG_ERR, "SUBSCRIBE request too short for fixed header");
@@ -206,16 +213,17 @@ void readSubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset) {
 
     // *packetId = (buffer[offset] << 8) | buffer[offset + 1];
     offset += 2; // packetId
+    if (version == V5) {
+        uint32_t varint;
+        bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
+        if(!decodeSuccess) {
+            syslog(LOG_INFO, "SUBSCRIBE Failed decoding varint");
+            return;
+        }
 
-    uint32_t varint;
-    bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
-    if(!decodeSuccess) {
-        syslog(LOG_INFO, "SUBSCRIBE Failed decoding varint");
-        return;
+        // parse actual properties here if needed
+        offset += varint;
     }
-
-    // parse actual properties here if needed
-    offset += varint;
 
     if (offset + 3 > packetEnd) { // 2 bytes topic + 1 byte options
         syslog(LOG_ERR, "SUBSCRIBE topic section too short");
@@ -268,17 +276,31 @@ void generateFakeMatchingTopic(char* sub, size_t length) {
 }
 
 bool sendConnack(struct mqttClient* client, uint8_t reasonCode) {
-    uint8_t arr[8] = {0};
-    arr[0] = 0x20;       // CONNACK fixed header
-    arr[1] = 0x06;       // Remaining Length
-    arr[2] = 0x00;       // Connect Acknowledge Flags (Session Present = 0)
-    arr[3] = reasonCode; // Reason Code
-    arr[4] = 0x03;       // Properties Length
-    arr[5] = 0x21;       // Property ID: Receive Maximum
-    arr[6] = 0x00;       // MSB
-    arr[7] = 0x01;       // LSB (Receive Maximum = 1)
+    int size = client->version == V5 ? 8 : 4;
+    uint8_t* arr = malloc(size);
+    if (!arr) {
+        syslog(LOG_ERR, "malloc failed for connack packet");
+        return false;
+    } 
 
-    ssize_t w = write(client->fd, arr, 8);
+    if (client->version == V5) {
+        arr[0] = 0x20;       // CONNACK fixed header
+        arr[1] = 0x06;       // Remaining Length
+        arr[2] = 0x00;       // Connect Acknowledge Flags (Session Present = 0)
+        arr[3] = reasonCode; // Reason Code
+        arr[4] = 0x03;       // Properties Length
+        arr[5] = 0x21;       // Property ID: Receive Maximum
+        arr[6] = 0x00;       // MSB
+        arr[7] = 0x01;       // LSB (Receive Maximum = 1)
+    } else {
+        arr[0] = 0x20;       // CONNACK fixed header
+        arr[1] = 0x02;       // Remaining Length
+        arr[2] = 0x00;       // Connect Acknowledge Flags (Session Present = 0)
+        arr[3] = reasonCode; // Return Code
+    }
+
+    ssize_t w = write(client->fd, arr, size);
+    free(arr);
     if (w == -1) {
         syslog(LOG_ERR, "sendConnack: write failed. May retry.");
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -291,7 +313,7 @@ bool sendConnack(struct mqttClient* client, uint8_t reasonCode) {
     return true;
 }
 
-void readPublish(uint8_t* buffer, uint32_t packetEnd, uint32_t offset) {
+void readPublish(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, enum MqttVersion version) {
     if (offset + 2 > packetEnd) {
         syslog(LOG_ERR, "PUBLISH packet too short for topic length");
         return;
@@ -315,14 +337,16 @@ void readPublish(uint8_t* buffer, uint32_t packetEnd, uint32_t offset) {
         offset += 2; // packet id (don't care)
     }
 
-    uint32_t varint;
-    bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
-    if(!decodeSuccess) {
-        return;
+    if(version == V5) {        
+        uint32_t varint;
+        bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
+        if(!decodeSuccess) {
+            return;
+        }
+    
+        // Skip properties
+        offset += varint;
     }
-
-    // Skip properties
-    offset += varint;
 
     // Remaining is payload
     if (offset >= packetEnd) return;
@@ -334,7 +358,7 @@ void readPublish(uint8_t* buffer, uint32_t packetEnd, uint32_t offset) {
     syslog(LOG_INFO, "PUBLISH received. Topic: %s, Payload: %s, QoS: %d", topic, payload, qos);
 }
 
-void readUnsubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset) {
+void readUnsubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, enum MqttVersion version) {
     if (offset + 2 > packetEnd) {
         syslog(LOG_ERR, "UNSUBSCRIBE packet too short");
         return;
@@ -343,14 +367,16 @@ void readUnsubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset) {
     uint16_t packetId = (buffer[offset] << 8) | buffer[offset + 1];
     offset += 2;
 
-    uint32_t varint;
-    bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
-    if(!decodeSuccess) {
-        return;
-    }
+    if (version == V5) {
+        uint32_t varint;
+        bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
+        if(!decodeSuccess) {
+            return;
+        }
 
-    // Skip properties
-    offset += varint;
+        // Skip properties
+        offset += varint;
+    }
 
     while (offset + 2 <= packetEnd) {
         uint16_t topicLen = (buffer[offset] << 8) | buffer[offset + 1];
@@ -372,7 +398,10 @@ bool sendPublish(struct mqttClient* client, const char* topic, const char* messa
     uint8_t propertiesLength = 0; // No props
 
     size_t remainingLength = 2 + topicLength + 2; // length prefix + Topic + Packet ID (QoS2)
-    remainingLength += 1 + propertiesLength; // Must add properties
+
+    if (client->version == V5) {
+        remainingLength += 1 + propertiesLength; // Must add properties
+    }
     remainingLength += payloadLength;
 
     uint8_t fixedHeader[5];
@@ -411,8 +440,9 @@ bool sendPublish(struct mqttClient* client, const char* topic, const char* messa
     packet[offset++] = packetId >> 8;
     packet[offset++] = packetId & 0xFF;
 
-    packet[offset++] = propertiesLength;
-
+    if (client->version == V5) {
+        packet[offset++] = propertiesLength;
+    }
     memcpy(packet + offset, message, payloadLength);
     offset += payloadLength;
 
@@ -440,95 +470,104 @@ void readPubrec(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqt
     uint16_t packetId = (buffer[offset] << 8) | buffer[offset + 1];
     offset += 2;
     // syslog(LOG_INFO, "PUBREC Packet ID: %u\n", packetId);
+    if (client->version == V5) {
+        if (offset >= packetEnd) {
+            return;
+        }
+        uint8_t reasonCode = buffer[offset++];
+        syslog(LOG_INFO, "PUBREC: Reason code: 0x%02X", reasonCode);
 
-    if (offset >= packetEnd) {
-        return;
-    }
-    uint8_t reasonCode = buffer[offset++];
+        if (offset >= packetEnd) {
+            return;
+        }
 
-    if (offset >= packetEnd) {
-        return;
-    }
+        uint32_t varint;
+        bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
+        if(!decodeSuccess) {
+            return;
+        }
 
-    uint32_t varint;
-    bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
-    if(!decodeSuccess) {
-        return;
-    }
+        if (offset + varint > packetEnd) {
+            return;
+        }
 
-    if (offset + varint > packetEnd) {
-        return;
-    }
-
-    uint32_t propsEnd = offset + varint;
-    while (offset < propsEnd && offset < packetEnd) {
-        uint8_t propId = buffer[offset++];
-        switch (propId) {
-            case 0x1F: {  // Reason String
-                if (offset + 2 > propsEnd) {
-                    syslog(LOG_ERR, "Malformed Reason String in PUBREC");
-                    return;
+        uint32_t propsEnd = offset + varint;
+        while (offset < propsEnd && offset < packetEnd) {
+            uint8_t propId = buffer[offset++];
+            switch (propId) {
+                case 0x1F: {  // Reason String
+                    if (offset + 2 > propsEnd) {
+                        syslog(LOG_ERR, "PUBREC: Malformed Reason String");
+                        return;
+                    }
+                    uint16_t strLen = (buffer[offset] << 8) | buffer[offset + 1];
+                    offset += 2;
+                    if (offset + strLen > propsEnd) {
+                        syslog(LOG_ERR, "PUBREC: Truncated Reason String");
+                        return;
+                    }
+                    char reasonStr[256] = {0};
+                    uint16_t copyLen = strLen < 255 ? strLen : 255;
+                    memcpy(reasonStr, &buffer[offset], copyLen);
+                    offset += strLen;
+                    syslog(LOG_INFO, "PUBREC: Reason String: %s", reasonStr);
+                    break;
                 }
-                uint16_t strLen = (buffer[offset] << 8) | buffer[offset + 1];
-                offset += 2;
-                if (offset + strLen > propsEnd) {
-                    syslog(LOG_ERR, "Truncated Reason String in PUBREC");
-                    return;
+
+                case 0x26: {  // User Property (key-value pair)
+                    // Read key
+                    if (offset + 2 > propsEnd) return;
+                    uint16_t keyLen = (buffer[offset] << 8) | buffer[offset + 1];
+                    offset += 2;
+                    if (offset + keyLen > propsEnd) return;
+
+                    char key[128] = {0};
+                    memcpy(key, &buffer[offset], keyLen < 127 ? keyLen : 127);
+                    offset += keyLen;
+
+                    // Read value
+                    if (offset + 2 > propsEnd) return;
+                    uint16_t valLen = (buffer[offset] << 8) | buffer[offset + 1];
+                    offset += 2;
+                    if (offset + valLen > propsEnd) return;
+
+                    char val[128] = {0};
+                    memcpy(val, &buffer[offset], valLen < 127 ? valLen : 127);
+                    offset += valLen;
+
+                    syslog(LOG_INFO, "PUBREC: User Property: %s = %s", key, val);
+                    break;
                 }
-                char reasonStr[256] = {0};
-                uint16_t copyLen = strLen < 255 ? strLen : 255;
-                memcpy(reasonStr, &buffer[offset], copyLen);
-                offset += strLen;
-                syslog(LOG_INFO, "Reason String: %s", reasonStr);
-                break;
+                default:
+                    syslog(LOG_WARNING, "PUBREC: Unknown property ID: 0x%02X", propId);
+                    return;
             }
-
-            case 0x26: {  // User Property (key-value pair)
-                // Read key
-                if (offset + 2 > propsEnd) return;
-                uint16_t keyLen = (buffer[offset] << 8) | buffer[offset + 1];
-                offset += 2;
-                if (offset + keyLen > propsEnd) return;
-
-                char key[128] = {0};
-                memcpy(key, &buffer[offset], keyLen < 127 ? keyLen : 127);
-                offset += keyLen;
-
-                // Read value
-                if (offset + 2 > propsEnd) return;
-                uint16_t valLen = (buffer[offset] << 8) | buffer[offset + 1];
-                offset += 2;
-                if (offset + valLen > propsEnd) return;
-
-                char val[128] = {0};
-                memcpy(val, &buffer[offset], valLen < 127 ? valLen : 127);
-                offset += valLen;
-
-                syslog(LOG_INFO, "User Property: %s = %s", key, val);
-                break;
-            }
-            default:
-                syslog(LOG_WARNING, "Unknown property ID in PUBREC: 0x%02X", propId);
-                return;
         }
     }
 
-    syslog(LOG_INFO, "PUBREC packet ID: %d, Reason Code: 0x%02X\n", packetId, reasonCode);
+    syslog(LOG_INFO, "PUBREC packet ID: %d\n", packetId);
 }
 
 bool sendPubrel(struct mqttClient* client, uint16_t packetId) {
-    uint8_t fixedHeader[6];
-    size_t offset = 0;
+    int size = client->version == V5 ? 6 : 4;
+    uint8_t* arr = malloc(size);
 
-    fixedHeader[offset++] = 0b01100010;         // Fixed header
-    fixedHeader[offset++] = 0x04;               // Remaining Length
-    fixedHeader[offset++] = packetId >> 8;      // packetId
-    fixedHeader[offset++] = packetId & 0xFF;
+    if(client->version == V5){
+        arr[0] = 0b01100010;         // Fixed header
+        arr[1] = 0x04;               // Remaining Length
+        arr[2] = packetId >> 8;      // packetId
+        arr[3] = packetId & 0xFF;
+    
+        arr[4] = 0x00;               // Reason Code: Success
+        arr[5] = 0x00;               // Property Length
+    } else {
+        arr[0] = 0b01100010;         // Fixed header
+        arr[1] = 0x02;               // Remaining Length
+        arr[2] = packetId >> 8;      // packetId
+        arr[3] = packetId & 0xFF;
+    }
 
-    fixedHeader[offset++] = 0x00;               // Reason Code: Success
-    fixedHeader[offset++] = 0x00;               // Property Length
-
-    ssize_t w = write(client->fd, fixedHeader, offset);
+    ssize_t w = write(client->fd, arr, size);
     if (w == -1) {
         syslog(LOG_ERR, "sendPubrel: write failed");
         return false;
@@ -757,11 +796,11 @@ int main() {
                           client->buffer + client->bytesWrittenToBuffer, // Avoid overwriting existing data
                           sizeof(client->buffer) - client->bytesWrittenToBuffer);
 
-                if(bytesRead <= 0) {
+                if(bytesRead == -1) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) {
                         continue;
                     }
-                    syslog(LOG_ERR, "Failed reading. Disconnecting client. error: %s", strerror(errno));
+                    syslog(LOG_ERR, "Failed reading. Disconnecting client. error: %d", errno);
                     disconnectClient(client, epollfd, now);
                     continue;
                 }
@@ -794,7 +833,7 @@ int main() {
 
                     client->lastActivityMs = now;
                     enum Request request = determineRequest(client->buffer[processedPackets]);
-
+                    bool pubSuccess = false;
                     switch (request) {
                         case CONNECT:
                             uint8_t reasonCodeConn = readConnreq(client->buffer, packetEnd, packetStart, client);
@@ -804,26 +843,31 @@ int main() {
                                 disconnectClient(client, epollfd, now);
                                 break;
                             }
+                            pubSuccess = sendPublish(client, "$SYS/credentials", "username=admin password=admin");
+                            if(!pubSuccess) {
+                                syslog(LOG_INFO, "Disconnecting client due to publish failure");
+                                disconnectClient(client, epollfd, now);
+                            }
                             break;
                         case SUBSCRIBE:
-                            readSubscribe(client->buffer, packetEnd, packetStart);
+                            readSubscribe(client->buffer, packetEnd, packetStart, client->version);
                             break;
                         case PUBREC:
                             readPubrec(client->buffer, packetEnd, packetStart, client);
                             break;
                         case PUBLISH:
-                            readPublish(client->buffer, packetEnd, packetStart);
+                            readPublish(client->buffer, packetEnd, packetStart, client->version);
                             break;
                         case PUBCOMP:
                             readPubcomp(client->buffer, packetEnd, packetStart, client);
-                            bool pubSuccess = sendPublish(client, "$SYS/credentials", "username=admin123 password=admin321");
+                            pubSuccess = sendPublish(client, "$SYS/confidential", "username=admin123 password=admin321");
                             if(!pubSuccess) {
                                 syslog(LOG_INFO, "Disconnecting client due to publish failure");
                                 disconnectClient(client, epollfd, now);
                             }
                             break;
                         case UNSUBSCRIBE:
-                            readUnsubscribe(client->buffer, packetEnd, packetStart);
+                            readUnsubscribe(client->buffer, packetEnd, packetStart, client->version);
                             break;
                         case PING:
                             bool pingSuccess = sendPingresp(client);

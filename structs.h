@@ -5,6 +5,7 @@
 #include "uthash.h"
 
 enum Request { CONNECT, PING, SUBSCRIBE, PUBREC, DISCONNECT, PUBLISH, UNSUBSCRIBE, PUBCOMP, UNSUPPORTED_REQUEST };
+enum MqttVersion { V5, V311 };
 
 struct client {
     int fd;
@@ -23,6 +24,7 @@ struct mqttClient {
     uint64_t lastActivityMs;
     uint64_t lastPubrelMs;
     long long timeOfConnection;
+    enum MqttVersion version;
     UT_hash_handle hh;
 };
 
