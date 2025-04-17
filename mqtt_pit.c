@@ -43,7 +43,7 @@ void deleteClient(struct mqttClient* client) {
 
 void heartbeatLog() {
     syslog(LOG_INFO, "Server is running with %d connected clients. Number of most concurrent connected clients is %d", HASH_COUNT(clients), statsMqtt.mostConcurrentConnections);
-    syslog(LOG_INFO, "The total amount of wasted time is %lld", statsMqtt.totalWastedTime);
+    syslog(LOG_INFO, "The total amount of wasted time is %lld. Total connected clients: %ld", statsMqtt.totalWastedTime, statsMqtt.totalConnects);
 }
 
 void initializeStats(){
