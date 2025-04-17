@@ -328,7 +328,7 @@ void *httpServer(void *arg) {
             //     continue;
             } else {
                 statsUpnp.otherHttpRequests += 1;
-                syslog(LOG_INFO, "Received %s request with %s url. Disconnecting client...", method, url);
+                syslog(LOG_INFO, "Received %s request with %s url from %s. Disconnecting client...", method, url, inet_ntoa(clientAddr.sin_addr));
                 close(clientFd);
                 free(newClient);
                 continue;
