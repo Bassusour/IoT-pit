@@ -79,7 +79,6 @@ bool decodeVarint(const uint8_t* buffer, uint32_t packetEnd, uint32_t* offset, u
 }
 
 uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqttClient* client){
-    // syslog(LOG_INFO, "Reading CONNECT request");
     if (offset + 2 > packetEnd) {
         syslog(LOG_ERR, "CONNECT request too small for fixed header");
         return 0x80; // Unspecified error
@@ -88,13 +87,18 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
     uint16_t protocolName = (buffer[offset] << 8) | buffer[offset + 1];
     offset += 2;
 
-    if (protocolName != 4 || memcmp(&buffer[offset], "MQTT", 4) != 0) {
-        char wrong[5] = {0};
-        memcpy(wrong, &buffer[offset], protocolName < 4 ? protocolName : 4);
-        syslog(LOG_ERR, "Malformed CONNECT request. Expected \"MQTT\" but got \"%s\"", wrong);
+    bool isV31 = memcmp(&buffer[offset], "MQIsdp", 6) == 0 ? true : false;
+    if (memcmp(&buffer[offset], "MQTT", 4) != 0 && !isV31){
+        char wrong[7] = {0};
+        memcpy(wrong, &buffer[offset], protocolName < 7 ? protocolName : 4);
+        syslog(LOG_ERR, "Malformed CONNECT request. Expected \"MQTT\" or \"MQIsdp\" but got \"%s\"", wrong);
         return 0x01; // Unacceptable protocol version
+    } 
+    if(isV31) {
+        offset += 6;
+    } else {
+        offset += 4;
     }
-    offset += 4;
 
     // Protocol Version
     if (offset >= packetEnd) {
@@ -107,6 +111,9 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
      } else if (proto_level == 0b100) {
         syslog(LOG_INFO, "Client connected with v3.1.1");
         client->version = V311;
+    } else if (proto_level == 0b011) {
+        syslog(LOG_INFO, "Client connected with v3.1");
+        client->version = V31;
     } else {
         syslog(LOG_ERR, "Unsupported MQTT version: %d", proto_level);
         return 0x01; // Unacceptable protocol version
@@ -351,9 +358,11 @@ void readPublish(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, enum Mqtt
     // Remaining is payload
     if (offset >= packetEnd) return;
 
-    uint32_t payloadLen = packetEnd - offset;
     char payload[512] = {0};
+    uint32_t payloadLen = packetEnd - offset;
+    uint32_t copyLen = payloadLen < sizeof(payload) - 1 ? payloadLen - 2: sizeof(payload) - 1;
     memcpy(payload, &buffer[offset], payloadLen < 511 ? payloadLen : 511);
+    payload[copyLen] = '\0';
 
     syslog(LOG_INFO, "PUBLISH received. Topic: %s, Payload: %s, QoS: %d", topic, payload, qos);
 }
@@ -800,7 +809,7 @@ int main() {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) {
                         continue;
                     }
-                    syslog(LOG_ERR, "Failed reading. Disconnecting client. error: %d", errno);
+                    syslog(LOG_ERR, "Failed reading. Disconnecting client. error: %s", strerror(errno));
                     disconnectClient(client, epollfd, now);
                     continue;
                 }

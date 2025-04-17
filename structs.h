@@ -5,7 +5,7 @@
 #include "uthash.h"
 
 enum Request { CONNECT, PING, SUBSCRIBE, PUBREC, DISCONNECT, PUBLISH, UNSUBSCRIBE, PUBCOMP, UNSUPPORTED_REQUEST };
-enum MqttVersion { V5, V311 };
+enum MqttVersion { V5, V311, V31 };
 
 struct client {
     int fd;
