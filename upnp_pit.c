@@ -290,8 +290,8 @@ void *httpServer(void *arg) {
             char buffer[1024];
             memset(buffer, 0, 1024);
             read(clientFd, buffer, 1024-1);
-            char method[10], url[256];
-            sscanf(buffer, "%9s %255s", method, url);
+            char method[20], url[256];
+            sscanf(buffer, "%19s %255s", method, url);
 
             if (strcmp(url, "/hue-device.xml") == 0 && strcmp(method, "GET") == 0) {
                 statsUpnp.totalXmlRequests += 1;
