@@ -16,7 +16,7 @@
 #include <sys/socket.h>
 #include "structs.h"
 
-#define PORT 1884
+#define PORT 1883
 #define MAX_EVENTS 4096
 #define EPOLL_TIMEOUT_INTERVAL_MS 5000
 #define PUBREL_INTERVAL_MS 10000
@@ -107,6 +107,7 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
     }
     uint8_t proto_level = buffer[offset++];
     if(proto_level == 0b101) {
+        syslog(LOG_INFO, "Client connected with v5");
         client->version = V5;
      } else if (proto_level == 0b100) {
         syslog(LOG_INFO, "Client connected with v3.1.1");
