@@ -314,7 +314,7 @@ bool sendConnack(struct mqttClient* client, uint8_t reasonCode) {
             return false;
         }
     } else {
-        syslog(LOG_INFO, "Sent CONNACK to client fd=%d\n", client->fd);
+        // syslog(LOG_INFO, "Sent CONNACK to client fd=%d\n", client->fd);
     }
 
     return true;
@@ -463,14 +463,13 @@ bool sendPublish(struct mqttClient* client, const char* topic, const char* messa
             return false;
         }
     } else {
-        syslog(LOG_INFO, "Sent PUBLISH to client (fd=%d), topic=%s\n", client->fd, topic);
+        // syslog(LOG_INFO, "Sent PUBLISH to client (fd=%d), topic=%s\n", client->fd, topic);
     }
     
     return true;
 }
 
 void readPubrec(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqttClient* client) {
-    syslog(LOG_INFO, "Received PUBREC for fd=%d", client->fd);
     if (offset + 2 > packetEnd) {
         syslog(LOG_ERR, "PUBREC packet too short for Packet Identifier\n");
         return;
@@ -554,7 +553,7 @@ void readPubrec(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqt
         }
     }
 
-    syslog(LOG_INFO, "PUBREC packet ID: %d\n", packetId);
+    syslog(LOG_INFO, "Received PUBREC for fd=%d and packet ID: %d\n", client->fd, packetId);
 }
 
 bool sendPubrel(struct mqttClient* client, uint16_t packetId) {
@@ -582,7 +581,7 @@ bool sendPubrel(struct mqttClient* client, uint16_t packetId) {
         return false;
     }
 
-    syslog(LOG_INFO, "Sent PUBREL to client fd=%d", client->fd);
+    // syslog(LOG_INFO, "Sent PUBREL to client fd=%d", client->fd);
     return true;
 }
 
