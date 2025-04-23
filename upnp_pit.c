@@ -17,7 +17,7 @@
 
 #define SSDP_PORT 1900
 #define HTTP_PORT 8080
-#define DELAY_MS 300
+#define DELAY_MS 10000
 #define SSDP_MULTICAST "239.255.255.250"
 #define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
 #define FD_LIMIT 4096
@@ -310,7 +310,12 @@ void *httpServer(void *arg) {
                     continue;
                 }
 
-                
+                char chunk_size[10];
+                snprintf(chunk_size, sizeof(FAKE_DEVICE_DESCRIPTION), "%X\r\n", (int)strlen(FAKE_DEVICE_DESCRIPTION));
+                write(clientFd, chunk_size, strlen(chunk_size));
+                write(clientFd, FAKE_DEVICE_DESCRIPTION, strlen(FAKE_DEVICE_DESCRIPTION));
+                write(clientFd, "\r\n", 2);
+
                 newClient->fd = clientFd;
                 newClient->sendNext = now + DELAY_MS;
                 newClient->timeConnected = 0;
