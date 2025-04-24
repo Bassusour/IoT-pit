@@ -554,7 +554,7 @@ void readPubrec(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqt
         }
     }
 
-    syslog(LOG_INFO, "Received PUBREC for fd=%d and packet ID: %d\n", client->fd, packetId);
+    // syslog(LOG_INFO, "Received PUBREC for fd=%d and packet ID: %d\n", client->fd, packetId);
 }
 
 bool sendPubrel(struct mqttClient* client, uint16_t packetId) {
@@ -595,7 +595,7 @@ void readPubcomp(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mq
 
     // Extract Packet Identifier
     uint16_t packetId = (buffer[offset] << 8) | buffer[offset + 1];
-    syslog(LOG_INFO, "PUBCOMP Packet ID: %u from client fd=%d", packetId, client->fd);
+    // syslog(LOG_INFO, "PUBCOMP Packet ID: %u from client fd=%d", packetId, client->fd);
 }
 
 bool sendPingresp(struct mqttClient* client) {
