@@ -16,8 +16,8 @@
 #include "structs.h"
 
 #define SSDP_PORT 1900
-#define HTTP_PORT 8080
-#define DELAY_MS 10000
+#define HTTP_PORT 49152
+#define DELAY_MS 5000
 #define SSDP_MULTICAST "239.255.255.250"
 #define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
 #define FD_LIMIT 4096
