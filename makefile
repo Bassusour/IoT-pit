@@ -1,29 +1,47 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g -pthread
 
-STRUCTS = structs.c
+STRUCTS = shared/structs.c
 
-TELNET_TARGET = telnet_pit
-UPNP_TARGET = upnp_pit
-MQTT_TARGET = mqtt_pit
+TELNET_TARGET = bin/telnet_pit
+UPNP_TARGET = bin/upnp_pit
+MQTT_TARGET = bin/mqtt_pit
 
-TELNET_SRC = telnet_pit.c
-UPNP_SRC = upnp_pit.c
-MQTT_SRC = mqtt_pit.c
+TELNET_SRC = servers/telnet_pit.c
+UPNP_SRC = servers/upnp_pit.c
+MQTT_SRC = servers/mqtt_pit.c
 
-# Default Rule: Compile all programs
-all: $(TELNET_TARGET) $(UPNP_TARGET) $(MQTT_TARGET)
+GO_DIR = prometheus
+GO_TARGET = bin/prometheus_exporter
+GO_SRCS := $(wildcard prometheus/*.go)
 
-$(TELNET_TARGET): $(TELNET_SRC)
-	$(CC) $(CFLAGS) -o $(TELNET_TARGET) $(TELNET_SRC) $(STRUCTS)
+BIN_DIR = bin
 
-$(UPNP_TARGET): $(UPNP_SRC)
-	$(CC) $(CFLAGS) -o $(UPNP_TARGET) $(UPNP_SRC) $(STRUCTS)
+# Default Rule
+all: $(TELNET_TARGET) $(UPNP_TARGET) $(MQTT_TARGET) $(GO_TARGET)
 
-$(MQTT_TARGET): $(MQTT_SRC)
-	$(CC) $(CFLAGS) -o $(MQTT_TARGET) $(MQTT_SRC) $(STRUCTS)
+$(TELNET_TARGET): $(TELNET_SRC) | $(BIN_DIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(STRUCTS)
+
+$(UPNP_TARGET): $(UPNP_SRC) | $(BIN_DIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(STRUCTS)
+
+$(MQTT_TARGET): $(MQTT_SRC) | $(BIN_DIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(STRUCTS)
+
+$(GO_TARGET): $(GO_SRCS) | $(BIN_DIR)
+	cd $(GO_DIR) && go build -o ../$(GO_TARGET)
+
+$(BIN_DIR):
+	mkdir -p $(BIN_DIR)
+
+# Aliases
+telnet_pit: $(TELNET_TARGET)
+upnp_pit:   $(UPNP_TARGET)
+mqtt_pit:   $(MQTT_TARGET)
+prometheus: $(GO_TARGET)
 
 clean:
-	rm -f $(TELNET_TARGET) $(UPNP_TARGET) $(MQTT_TARGET)
+	rm -f $(TELNET_TARGET) $(UPNP_TARGET) $(MQTT_TARGET) $(GO_TARGET)
 
-.PHONY: all clean run_telnet run_upnp
+.PHONY: all clean

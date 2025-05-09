@@ -134,12 +134,6 @@ func parseTimeMs(s string) int64 {
 	return ms
 }
 
-type geoMeta struct {
-    Country  string
-    Location string // e.g. "59.4,24.7"
-    Geohash  string
-}
-
 func geoLookup(ipStr string) string {
     ip := netip.MustParseAddr(ipStr)
     // if ip == nil {
@@ -164,16 +158,4 @@ func geoLookup(ipStr string) string {
     // }
 
 	return record.Country.ISOCode
-
-//     country := record.Country.IsoCode
-//     // lat := record.Location.Latitude
-//     // lon := record.Location.Longitude
-//     location := fmt.Sprintf("%.4f,%.4f", lat, lon)
-//     geohash := encodeGeohash(lat, lon)
-
-//     return geoMeta{
-//         Country:  country,
-//         Location: location,
-//         Geohash:  geohash,
-//     }
 }

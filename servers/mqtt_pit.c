@@ -14,7 +14,7 @@
 #include <syslog.h>
 #include <time.h>
 #include <sys/socket.h>
-#include "structs.h"
+#include "../shared/structs.h"
 
 #define PORT 1883
 #define MAX_EVENTS 4096
@@ -476,7 +476,7 @@ void readPubrec(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqt
         return;
     }
 
-    uint16_t packetId = (buffer[offset] << 8) | buffer[offset + 1];
+    // uint16_t packetId = (buffer[offset] << 8) | buffer[offset + 1];
     offset += 2;
     // syslog(LOG_INFO, "PUBREC Packet ID: %u\n", packetId);
     if (client->version == V5) {
@@ -594,7 +594,7 @@ void readPubcomp(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mq
     }
 
     // Extract Packet Identifier
-    uint16_t packetId = (buffer[offset] << 8) | buffer[offset + 1];
+    // uint16_t packetId = (buffer[offset] << 8) | buffer[offset + 1];
     // syslog(LOG_INFO, "PUBCOMP Packet ID: %u from client fd=%d", packetId, client->fd);
 }
 

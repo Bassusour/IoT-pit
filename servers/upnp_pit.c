@@ -13,7 +13,7 @@
 #include <netdb.h>
 #include <signal.h>
 #include <ifaddrs.h>
-#include "structs.h"
+#include "../shared/structs.h"
 
 #define SSDP_PORT 1900
 #define HTTP_PORT 49152

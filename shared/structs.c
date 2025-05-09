@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <time.h>
 #include <sys/resource.h>
+#include <sys/un.h>
 #include "structs.h"
 
 struct queue clientQueueTelnet;
@@ -100,4 +101,17 @@ void setFdLimit(int limit) {
     rl.rlim_cur = limit;
     rl.rlim_max = limit;
     setrlimit(RLIMIT_NOFILE, &rl);
+}
+
+void sendMetric(const char* message) {
+    int sock = socket(AF_UNIX, SOCK_DGRAM, 0);
+    if (sock < 0) return;
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, "/tmp/tarpit_exporter.sock", sizeof(addr.sun_path)-1);
+
+    sendto(sock, message, strlen(message), 0, (struct sockaddr*)&addr, sizeof(addr));
+    close(sock);
 }

@@ -12,12 +12,13 @@
 #include <signal.h>
 #include <syslog.h>
 #include <time.h>
-#include "structs.h"
+#include "../shared/structs.h"
 
 #define PORT 23
 #define DELAY_MS 100
 #define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
 #define FD_LIMIT 4096
+#define SERVER_ID "Telnet"
 
 #define IAC 255
 #define DO 253
@@ -94,8 +95,12 @@ int main() {
                         queue_append(&clientQueueTelnet, c);
                     } else {
                         long long timeTrapped = c->timeConnected;
-                        syslog(LOG_INFO, "Client disconnected from IP: %s with fd: %d with time %lld", 
-                            c->ipaddr, c->fd, timeTrapped);
+                        // syslog(LOG_INFO, "Client disconnected from IP: %s with fd: %d with time %lld", 
+                        //     c->ipaddr, c->fd, timeTrapped);
+                        char msg[256];
+                        snprintf(msg, sizeof(msg), "%s disconnect %s  %lld",
+                            SERVER_ID, c->ipaddr, timeTrapped);
+                        sendMetric(msg);
                         close(c->fd);
                         free(c);
                     }

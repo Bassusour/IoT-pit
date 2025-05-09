@@ -1,0 +1,49 @@
+services:
+  prometheus-exporter:
+    build:
+      context: .
+      dockerfile: ./docker/prometheus/Dockerfile
+    container_name: prometheus-exporter
+    ports:
+      - "9101:9101"
+    volumes:
+      - tarpit-sock:/tmp  # Shared volume for domain socket
+      - ./prometheus/GeoLite2-Country.mmdb:/data/GeoLite2-Country.mmdb:ro
+    environment:
+      - GEO_DB=/data/GeoLite2-Country.mmdb
+
+  tarpits:
+    build:
+      context: .
+      dockerfile: ./docker/tarpits/Dockerfile
+    container_name: tarpits
+    volumes:
+      - tarpit-sock:/tmp  # Share socket with prometheus-exporter
+    command: ["run.sh", "start"]
+
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    depends_on:
+      - prometheus-exporter
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-storage:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  grafana-storage:
+  # prometheus-storage:
+  tarpit-sock:
