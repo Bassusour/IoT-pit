@@ -13,12 +13,8 @@ FROM debian:bookworm-slim
 # Copy binaries to PATH
 COPY --from=c-builder /src/bin/* /usr/local/bin/
 
-# Install minimal runtime dependencies (if needed)
-# RUN apt-get update && apt-get install -y musl && rm -rf /var/lib/apt/lists/*
+# COPY run.sh /usr/local/bin/
+# RUN chmod +x /usr/local/bin/run.sh
 
-# Optional script
-COPY run.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/run.sh
-
-WORKDIR /app
-CMD ["run.sh", "start"]
+# WORKDIR /app
+# CMD ["run.sh", "start"]

@@ -19,7 +19,7 @@ services:
     container_name: tarpits
     volumes:
       - tarpit-sock:/tmp  # Share socket with prometheus-exporter
-    command: ["run.sh", "start"]
+    # command: ["run.sh", "start"]
 
   prometheus:
     image: prom/prometheus
@@ -40,8 +40,13 @@ services:
       - "3000:3000"
     volumes:
       - grafana-storage:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/dashboards
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
     depends_on:
       - prometheus
+    environment:
+    - GF_LOG_LEVEL=warn
 
 volumes:
   grafana-storage:

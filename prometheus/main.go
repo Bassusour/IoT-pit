@@ -41,9 +41,9 @@ func NewMetrics() *metrics {
 			Help: "Currently connected clients",
 		}, []string{"server"}),
 		clientsByIP: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "telnet_pit_client_connected",
+			Name: "telnet_pit_clients",
 			Help: "Connected clients by IP (used for geolocation)",
-		}, []string{"server", "ip", "country"}),
+		}, []string{"server", "ip", "country", "latitude", "longitude"}),
 	}
 	prometheus.MustRegister(m.totalConnects, m.totalTrappedTime, m.activeClients, m.clientsByIP)
 	return m
@@ -52,9 +52,10 @@ func NewMetrics() *metrics {
 func main() {
 	var err error
     // db, err := geoip2.Open("GeoLite2-Country.mmdb")
-	db, err := maxminddb.Open("GeoLite2-Country.mmdb")
+	geoliteDbPath := os.Getenv("GEO_DB")
+	db, err := maxminddb.Open(geoliteDbPath)
     if err != nil {
-        log.Fatal("Cannot open GeoLite2 database:", err)
+        log.Fatal("Cannot open GeoLite2 database: ", err)
     }
     defer db.Close()
 
@@ -64,7 +65,7 @@ func main() {
 	m.totalConnects.WithLabelValues(server).Add(1)
 	m.totalTrappedTime.WithLabelValues(server).Add(2)
 	m.activeClients.WithLabelValues(server).Set(3)
-	m.clientsByIP.WithLabelValues(server, "82.211.212.0", "Denmark").Set(4)
+	m.clientsByIP.WithLabelValues(server, "82.211.212.0", "Denmark", "55.676097", "12.568337").Set(4)
 
 	// Start socket listener
 	go listenForMetrics("/tmp/tarpit_exporter.sock", m)
@@ -114,7 +115,9 @@ func handleMetric(line string, metrics *metrics) {
 		// activeClients.Inc()
 		// clientsByIP.WithLabelValues(ip).Set(1)
 		gm := geoLookup(ip)
-        metrics.clientsByIP.WithLabelValues(ip, server, gm).Inc()
+		lat := CapitalCoordinates[gm]
+		lon := CapitalCoordinates[gm]
+        metrics.clientsByIP.WithLabelValues(ip, server, gm, fmt.Sprintf("%f", lat), fmt.Sprintf("%f", lon)).Inc()
 
 	case "disconnect":
 		// if len(fields) != 3 {
