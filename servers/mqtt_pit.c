@@ -16,13 +16,20 @@
 #include <sys/socket.h>
 #include "../shared/structs.h"
 
-#define PORT 1883
-#define MAX_EVENTS 4096
-#define EPOLL_TIMEOUT_INTERVAL_MS 5000
-#define PUBREL_INTERVAL_MS 10000
-#define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
-#define MAX_PACKETS_PER_CLIENTS 50
-#define FD_LIMIT 4096
+// #define PORT 1883
+// #define MAX_EVENTS 4096
+// #define EPOLL_TIMEOUT_INTERVAL_MS 5000
+// #define PUBREL_INTERVAL_MS 10000
+// #define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
+// #define MAX_PACKETS_PER_CLIENTS 50
+// #define FD_LIMIT 4096
+
+int port;
+int maxEvents;
+int epollTimeoutInterval;
+uint32_t pubrelInterval;
+uint32_t maxPacketsPerClient;
+int maxNoClients;
 
 struct mqttClient* clients = NULL;
 
@@ -586,7 +593,7 @@ bool sendPubrel(struct mqttClient* client, uint16_t packetId) {
     return true;
 }
 
-void readPubcomp(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqttClient* client) {
+void readPubcomp(uint32_t packetEnd, uint32_t offset) {
     // syslog(LOG_INFO, "Received PUBCOMP");
     if (offset + 2 > packetEnd) {
         syslog(LOG_ERR, "PUBCOMP packet too short for Packet Identifier");
@@ -661,7 +668,7 @@ void calculateTotalPacketLengths(uint8_t *buffer, uint32_t bytesWrittenToBuffer,
             break; 
         }
 
-        if (*packetCount == MAX_PACKETS_PER_CLIENTS) {
+        if (*packetCount == maxPacketsPerClient) {
             syslog(LOG_INFO, "CALCULATE: Max count reached");
             break;
         }
@@ -711,13 +718,20 @@ void cleanupBuffer(struct mqttClient* client, uint32_t packetLength){
     client->bytesWrittenToBuffer = leftover;
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+    (void)argc;
+    port = atoi(argv[1]);
+    maxEvents = atoi(argv[2]);
+    epollTimeoutInterval = atoi(argv[3]);
+    pubrelInterval = atoi(argv[4]);
+    maxPacketsPerClient = atoi(argv[5]);
+    maxNoClients = atoi(argv[6]);
     openlog("mqtt_tarpit", LOG_PID | LOG_CONS, LOG_USER);
     initializeStats();
-    setFdLimit(FD_LIMIT);
+    setFdLimit(maxNoClients);
     signal(SIGPIPE, SIG_IGN);
     
-    int serverSock = createServer(PORT);
+    int serverSock = createServer(port);
     if (serverSock < 0) {
         syslog(LOG_ERR, "Invalid server socket fd: %d", serverSock);
         exit(EXIT_FAILURE);
@@ -726,7 +740,7 @@ int main() {
     struct sockaddr_in clientAddr;
     socklen_t addrLen = sizeof(clientAddr);
 
-    struct epoll_event ev, eventsQueue[MAX_EVENTS];
+    struct epoll_event ev, eventsQueue[maxEvents];
     int epollfd = epoll_create1(0);
     if (epollfd == -1) {
         syslog(LOG_ERR, "epoll_create1 failed");
@@ -740,16 +754,16 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    long long lastHeartbeat = currentTimeMs();
+    // long long lastHeartbeat = currentTimeMs();
     while(true) {
         long long now = currentTimeMs();
 
-        if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
-            heartbeatLog();
-            lastHeartbeat = now;
-        }
+        // if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
+        //     heartbeatLog();
+        //     lastHeartbeat = now;
+        // }
 
-        int nfds = epoll_wait(epollfd, eventsQueue, MAX_EVENTS, EPOLL_TIMEOUT_INTERVAL_MS);
+        int nfds = epoll_wait(epollfd, eventsQueue, maxEvents, epollTimeoutInterval);
         if (nfds == -1) {
             syslog(LOG_ERR, "epoll_wait");
             exit(EXIT_FAILURE);
@@ -822,8 +836,8 @@ int main() {
                     continue;
                 }
 
-                uint32_t packetLengths[MAX_PACKETS_PER_CLIENTS]; // Length of each packet
-                uint32_t packetStarts[MAX_PACKETS_PER_CLIENTS]; // Points to the start of each packet, after the header values
+                uint32_t packetLengths[maxPacketsPerClient]; // Length of each packet
+                uint32_t packetStarts[maxPacketsPerClient]; // Points to the start of each packet, after the header values
                 uint32_t packetCount = 0;
 
                 calculateTotalPacketLengths(client->buffer, client->bytesWrittenToBuffer,
@@ -868,7 +882,7 @@ int main() {
                             readPublish(client->buffer, packetEnd, packetStart, client->version);
                             break;
                         case PUBCOMP:
-                            readPubcomp(client->buffer, packetEnd, packetStart, client);
+                            readPubcomp(packetEnd, packetStart);
                             pubSuccess = sendPublish(client, "$SYS/confidential", "username=admin123 password=admin321");
                             if(!pubSuccess) {
                                 syslog(LOG_INFO, "Disconnecting client due to publish failure");
@@ -908,7 +922,7 @@ int main() {
         for (struct mqttClient *c = clients, *tmp = NULL; c != NULL; c = tmp) {
             long long timeSinceLastActivityMs = now - c->lastActivityMs;
             tmp = c->hh.next;
-            if ((now - c->lastPubrelMs > PUBREL_INTERVAL_MS) || (timeSinceLastActivityMs > c->keepAlive * 1400)) {
+            if ((now - c->lastPubrelMs > pubrelInterval) || (timeSinceLastActivityMs > c->keepAlive * 1400)) {
                 bool success = sendPubrel(c, 1234);
                 c->lastActivityMs = now;
                 c->lastPubrelMs = now;

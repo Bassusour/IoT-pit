@@ -15,13 +15,18 @@
 #include <ifaddrs.h>
 #include "../shared/structs.h"
 
-#define SSDP_PORT 1900
-#define HTTP_PORT 49152
-#define DELAY_MS 5000
+// #define SSDP_PORT 1900
+// #define HTTP_PORT 49152
+// #define DELAY_MS 5000
 #define SSDP_MULTICAST "239.255.255.250"
-#define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
-#define FD_LIMIT 4096
-    
+// #define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
+// #define FD_LIMIT 4096
+
+int httpPort;
+int ssdpPort;
+int delay;
+int maxNoClients;
+
 // Can use Chunked Transfer Coding from rfc 2616 section 3.6.1
 // Required to be a HTTP GET request (Section 2.1 from specifications)
 const char *FAKE_DEVICE_DESCRIPTION =
@@ -129,7 +134,7 @@ char* ssdpResponse() {
         "USN: uuid:bd752e88-91a9-49e4-8297-8433e05d1c22::urn:Philips:device:Basic:1\r\n"
         "BOOTID.UPNP.ORG: 1\r\n"
         "CONFIGID.UPNP.ORG: 1337\r\n"
-        "\r\n", ipAddress, HTTP_PORT);
+        "\r\n", ipAddress, httpPort);
     return responseBuffer;
 }
 
@@ -153,7 +158,7 @@ void *ssdpListener(void *arg) {
     memset(&serverAddr, 0, sizeof(serverAddr));
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(SSDP_PORT);
+    serverAddr.sin_port = htons(ssdpPort);
 
     // Join the SSDP multicast group
     struct ip_mreq mreq;
@@ -167,7 +172,7 @@ void *ssdpListener(void *arg) {
         exit(EXIT_FAILURE);
     }
 
-    syslog(LOG_INFO, "UPnP listener started on port %d\n", SSDP_PORT);
+    syslog(LOG_INFO, "UPnP listener started on port %d\n", ssdpPort);
 
     while (1) {
         memset(buffer, 0, sizeof(buffer));
@@ -203,7 +208,7 @@ void *httpServer(void *arg) {
     (void)arg;
     signal(SIGPIPE, SIG_IGN);
     queue_init(&clientQueueUpnp);
-    int serverSock = createServer(HTTP_PORT);
+    int serverSock = createServer(httpPort);
     if (serverSock < 0) {
         syslog(LOG_ERR, "Invalid server socket fd: %d", serverSock);
         exit(EXIT_FAILURE);
@@ -217,17 +222,17 @@ void *httpServer(void *arg) {
     fds.fd = serverSock;
     fds.events = POLLIN;
 
-    long long lastHeartbeat = currentTimeMs();
+    // long long lastHeartbeat = currentTimeMs();
     while (1){
         long long now = currentTimeMs();
         int timeout = -1;
 
-        long long res = now - lastHeartbeat;
+        // long long res = now - lastHeartbeat;
 
-        if (res >= HEARTBEAT_INTERVAL_MS) {
-            heartbeatLog();
-            lastHeartbeat = now;
-        }
+        // if (res >= HEARTBEAT_INTERVAL_MS) {
+        //     heartbeatLog();
+        //     lastHeartbeat = now;
+        // }
 
         while (clientQueueUpnp.head) {
             if(clientQueueUpnp.head->sendNext <= now){
@@ -241,9 +246,9 @@ void *httpServer(void *arg) {
                 
                 if (out == -1) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) { // Avoid blocking
-                        c->sendNext = now + DELAY_MS;
-                        c->timeConnected += DELAY_MS;
-                        statsUpnp.totalWastedTime += DELAY_MS;
+                        c->sendNext = now + delay;
+                        c->timeConnected += delay;
+                        statsUpnp.totalWastedTime += delay;
                         queue_append(&clientQueueUpnp, c);
                     } else {
                         long long timeTrapped = c->timeConnected;
@@ -253,9 +258,9 @@ void *httpServer(void *arg) {
                         free(c);
                     }
                 } else {
-                    c->sendNext = now + DELAY_MS;
-                    c->timeConnected += DELAY_MS;
-                    statsUpnp.totalWastedTime += DELAY_MS;
+                    c->sendNext = now + delay;
+                    c->timeConnected += delay;
+                    statsUpnp.totalWastedTime += delay;
                     queue_append(&clientQueueUpnp, c);
                 }
             } else {
@@ -317,7 +322,7 @@ void *httpServer(void *arg) {
                 write(clientFd, "\r\n", 2);
 
                 newClient->fd = clientFd;
-                newClient->sendNext = now + DELAY_MS;
+                newClient->sendNext = now + delay;
                 newClient->timeConnected = 0;
                 snprintf(newClient->ipaddr, sizeof(newClient->ipaddr), "%s", inet_ntoa(clientAddr.sin_addr));
                 queue_append(&clientQueueUpnp, newClient);
@@ -355,10 +360,15 @@ void initializeStats(){
     statsUpnp.totalXmlRequests = 0;
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+    (void)argc;
+    httpPort = atoi(argv[1]);
+    ssdpPort = atoi(argv[2]);
+    delay = atoi(argv[3]);
+    maxNoClients = atoi(argv[0]);
     openlog("upnp_tarpit", LOG_PID | LOG_CONS, LOG_USER);
     initializeStats();
-    setFdLimit(FD_LIMIT);
+    setFdLimit(maxNoClients);
     pthread_t ssdpThread, httpThread;
     pthread_create(&ssdpThread, NULL, ssdpListener, NULL);
     pthread_create(&httpThread, NULL, httpServer, NULL);

@@ -14,10 +14,10 @@
 #include <time.h>
 #include "../shared/structs.h"
 
-#define PORT 23
-#define DELAY_MS 100
-#define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
-#define FD_LIMIT 4096
+// #define PORT 23
+// #define DELAY_MS 100
+// #define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
+// #define FD_LIMIT 4096
 #define SERVER_ID "Telnet"
 
 #define IAC 255
@@ -25,6 +25,10 @@
 #define DONT 254
 #define WILL 251
 #define WONT 252
+
+int port;
+int delay;
+int maxNoClients;
 
 // Telnet negotiation options
 unsigned char negotiations[][3] = {
@@ -48,14 +52,18 @@ void initializeStats(){
     statsTelnet.mostConcurrentConnections = 0;
 }
 
-int main() {
+int main(int argc, char *argv[]) {
+    (void)argc;
+    port = atoi(argv[1]);
+    delay = atoi(argv[2]);
+    maxNoClients = atoi(argv[3]);
     openlog("telnet_tarpit", LOG_PID | LOG_CONS, LOG_USER);
     initializeStats();
-    setFdLimit(FD_LIMIT);
+    setFdLimit(maxNoClients);
     signal(SIGPIPE, SIG_IGN); // Ignore 
     queue_init(&clientQueueTelnet);
     
-    int serverSock = createServer(PORT);
+    int serverSock = createServer(port);
     if (serverSock < 0) {
         syslog(LOG_ERR, "Invalid server socket fd: %d", serverSock);
         exit(EXIT_FAILURE);
@@ -69,15 +77,15 @@ int main() {
     fds.fd = serverSock;
     fds.events = POLLIN;
     
-    long long lastHeartbeat = currentTimeMs();
+    // long long lastHeartbeat = currentTimeMs();
     while (1) {
         long long now = currentTimeMs();
         int timeout = -1;
 
-        if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
-            heartbeatLog();
-            lastHeartbeat = now;
-        }
+        // if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
+        //     heartbeatLog();
+        //     lastHeartbeat = now;
+        // }
 
         // Process clients in queue
         while (clientQueueTelnet.head) {
@@ -89,9 +97,9 @@ int main() {
                 
                 if (out == -1) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) { // Avoid blocking
-                        c->sendNext = now + DELAY_MS;
-                        c->timeConnected += DELAY_MS;
-                        statsTelnet.totalWastedTime += DELAY_MS;
+                        c->sendNext = now + delay;
+                        c->timeConnected += delay;
+                        statsTelnet.totalWastedTime += delay;
                         queue_append(&clientQueueTelnet, c);
                     } else {
                         long long timeTrapped = c->timeConnected;
@@ -105,9 +113,9 @@ int main() {
                         free(c);
                     }
                 } else {
-                    c->sendNext = now + DELAY_MS;
-                    c->timeConnected += DELAY_MS;
-                    statsTelnet.totalWastedTime += DELAY_MS;
+                    c->sendNext = now + delay;
+                    c->timeConnected += delay;
+                    statsTelnet.totalWastedTime += delay;
                     queue_append(&clientQueueTelnet, c);
                 }
             } else {
@@ -141,7 +149,7 @@ int main() {
 
             statsTelnet.totalConnects += 1;
             newClient->fd = clientFd;
-            newClient->sendNext = now + DELAY_MS;
+            newClient->sendNext = now + delay;
             newClient->timeConnected = 0;
             strncpy(newClient->ipaddr, inet_ntoa(clientAddr.sin_addr), INET6_ADDRSTRLEN);
             queue_append(&clientQueueTelnet, newClient);

@@ -100,7 +100,9 @@ void setFdLimit(int limit) {
     struct rlimit rl;
     rl.rlim_cur = limit;
     rl.rlim_max = limit;
-    setrlimit(RLIMIT_NOFILE, &rl);
+    if (setrlimit(RLIMIT_NOFILE, &rl) != 0) {
+        perror("setrlimit failed");
+    }
 }
 
 void sendMetric(const char* message) {

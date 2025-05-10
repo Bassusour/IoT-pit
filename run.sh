@@ -1,109 +1,149 @@
 #!/bin/bash
 
-# Paths to binaries
-BIN_DIR="."
-TELNET="$BIN_DIR/telnet_pit"
-UPNP="$BIN_DIR/upnp_pit"
-MQTT="$BIN_DIR/mqtt_pit"
-EXPORTER="$BIN_DIR/prometheus_exporter"
+BIN_DIR="/usr/local/bin"
+PID_DIR="/tmp/tarpits"
 
-PID_DIR="./pids"
 mkdir -p "$PID_DIR"
 
-# Defaults
-START_ALL=true
-INCLUDE_SERVERS=()
-PORT=""
-DELAY=""
-CONFIGS=()
-
-# Parse CLI arguments
-while [[ "$#" -gt 0 ]]; do
-    case $1 in
-        start|stop|status|restart) ACTION=$1 ;;
-        --only=*) IFS=',' read -r -a INCLUDE_SERVERS <<< "${1#*=}"; START_ALL=false ;;
-        --port=*) PORT="${1#*=}" ;;
-        --delay=*) DELAY="${1#*=}" ;;
-        --config=*) CONFIGS+=("${1#*=}") ;;
-        *) echo "Unknown option: $1" && exit 1 ;;
-    esac
-    shift
-done
-
-# Check if a server is included
-should_start() {
-    local name=$1
-    if $START_ALL; then
-        return 0
-    fi
-    for server in "${INCLUDE_SERVERS[@]}"; do
-        [[ "$server" == "$name" ]] && return 0
-    done
-    return 1
-}
-
-# Start a server
-start_server() {
-    local name=$1
-    local binary=$2
-    local pidfile="$PID_DIR/$name.pid"
-    local args=""
-
-    # Example of per-server config
-    case "$name" in
-        telnet)
-            [[ -n "$PORT" ]] && args+=" --port=$PORT"
-            [[ -n "$DELAY" ]] && args+=" --delay=$DELAY"
-            ;;
-        mqtt)
-            [[ -n "$DELAY" ]] && args+=" --mqtt-delay=$DELAY"
-            ;;
-        upnp)
-            ;;
-        exporter)
-            ;;
-    esac
-
-    echo "Starting $name with args: $args"
-    $binary $args & echo $! > "$pidfile"
-}
-
-start() {
-    echo "Starting selected servers..."
-    should_start telnet   && start_server telnet "$TELNET"
-    should_start upnp     && start_server upnp "$UPNP"
-    should_start mqtt     && start_server mqtt "$MQTT"
-    should_start exporter && start_server exporter "$EXPORTER"
-    echo "Done."
-}
-
-stop() {
-    echo "Stopping servers..."
-    for pidfile in "$PID_DIR"/*.pid; do
-        [ -f "$pidfile" ] || continue
-        pid=$(cat "$pidfile")
-        kill "$pid" 2>/dev/null && echo "Stopped $(basename "$pidfile" .pid)"
-        rm -f "$pidfile"
-    done
-}
-
-status() {
-    echo "Status of servers:"
-    for pidfile in "$PID_DIR"/*.pid; do
-        name=$(basename "$pidfile" .pid)
-        pid=$(cat "$pidfile")
-        if ps -p "$pid" > /dev/null; then
-            echo "$name: running (pid $pid)"
-        else
-            echo "$name: not running"
+allArgsAreNumbers() {
+    for arg in "$@"; do
+        if ! [[ "$arg" =~ ^[0-9]+$ ]]; then
+            echo "Error: '$arg' is not a valid number."
+            exit 1
         fi
     done
 }
 
-case "$ACTION" in
-    start) start ;;
-    stop) stop ;;
-    status) status ;;
-    restart) stop; start ;;
-    *) echo "Usage: $0 {start|stop|restart|status} [--only=telnet,mqtt] [--port=XXXX] [--delay=Y]"; exit 1 ;;
+# TODO: Describe args
+function showHelp() {
+    echo "Usage:"
+    echo "  $0 start <protocol> [args...]"
+    echo "  $0 stop <protocol>"
+    echo "  $0 status"
+    echo
+    echo "Servers and required arguments:"
+    echo "  telnet <port> <delay> <max-clients>"
+    echo "    - port: "
+    echo "    - delay: "
+    echo "    - max-no-clients: "
+    echo
+    echo "  upnp <http-port> <ssdp-port> <delay> <max-clients>" 
+    echo "    - http-port: "
+    echo "    - ssdp-port: "
+    echo "    - delay: "
+    echo "    - max-clients: "
+    echo
+    echo "  mqtt <port> <max-events> <epoll-interval> <pubrel-interval> <max-packets> <max-clients>"
+    echo "    - port: "
+    echo "    - max-events: "
+    echo "    - epoll-interval: "
+    echo "    - pubrel-interval: "
+    echo "    - max_packets: "
+    echo "    - max-clients: "
+}
+
+function invalidAmountOfArgs() {
+    echo "Error: Invalid amount of arguments for '$1'"
+    echo
+    showHelp
+    exit 1
+}
+
+function startTelnet() {
+    [ $# -ne 3 ] && invalidAmountOfArgs "telnet_pit"
+    allArgsAreNumbers "$@"
+
+    local port=$1
+    local delay=$2
+    local maxNoClients=$3
+    echo "Starting telnet_pit with port=$port, delay=$delay, max-no-clients=$maxNoClients"
+
+    "$BIN_DIR/telnet_pit" "$port" "$delay" "$maxNoClients" &
+    echo $! > "$PID_DIR/telnet_pit.pid"
+}
+
+function startUpnp() {
+    [ $# -ne 4 ] && invalidAmountOfArgs "upnp_pit"
+    allArgsAreNumbers "$@"
+
+    local httpPort=$1
+    local ssdpPort=$2
+    local delay=$3
+    local maxNoClients=$4
+    echo "Starting upnp_pit with http-port=$httpPort ssdp-port=$ssdpPort delay=$delay max-no-clients=$maxNoClients"
+
+    "$BIN_DIR/upnp_pit" "$httpPort" "$ssdpPort" "$delay" "$maxNoClients" &
+    echo $! > "$PID_DIR/upnp_pit.pid"
+}
+
+function startMqtt() {
+    [ $# -ne 6 ] && invalidAmountOfArgs "mqtt_pit"
+    allArgsAreNumbers "$@"
+    local port=$1
+    local maxEvents=$2
+    local epollTimeoutInterval=$3
+    local pubrelInterval=$4
+    local maxPacketsPerClient=$5
+    local maxNoClients=$6
+    echo "Starting mqtt_pit with port=$port maxEvents=$maxEvents epollTimeout=$epollTimeout pubrelInterval=$pubrelInterval maxPackets=$maxPackets maxNoClients=$maxNoClients"
+    "$BIN_DIR/mqtt_pit" "$port" "$maxEvents" "$epollTimeoutInterval" "$pubrelInterval" "$maxPacketsPerClient" "$maxNoClients" &
+    echo $! > "$PID_DIR/mqtt_pit.pid"
+}
+
+function stopServer() {
+    local server="$1"
+    local pid_file="$PID_DIR/${server}.pid"
+    if [ -f "$pid_file" ]; then
+        kill "$(cat "$pid_file")" && rm "$pid_file"
+        echo "Stopped $server"
+    else
+        echo "$server not running"
+    fi
+}
+
+function status() {
+    # TODO: Only check for single server
+}
+
+function stopServer() {
+    # TODO
+}
+
+case "$1" in
+    start)
+        shift
+        protocol="$1"
+        shift
+        case "$protocol" in
+            telnet)
+                startTelnet "$@"
+                ;;
+            upnp)
+                startUpnp "$@"
+                ;;
+            mqtt)
+                startMqtt "$@"
+                ;;
+            *)
+                echo "Unknown protocol: $protocol"
+                showHelp
+                exit 1
+                ;;
+        esac
+        ;;
+    stop)
+        shift
+        stopServer "$1"
+        ;;
+    status)
+        status
+        ;;
+    --help|-h|help)
+        showHelp
+        ;;
+    *)
+        echo "Invalid command: $1"
+        showHelp
+        exit 1
+        ;;
 esac
