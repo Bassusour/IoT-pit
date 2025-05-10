@@ -8,7 +8,7 @@ services:
       - "127.0.0.1:9101:9101"
     volumes:
       - tarpit-sock:/tmp  # Shared volume for domain socket
-      - ./prometheus/GeoLite2-Country.mmdb:/data/GeoLite2-Country.mmdb:ro
+      - ${PATH_TO_COUNTRY_MMDB}:/data/GeoLite2-Country.mmdb:ro
     environment:
       - GEO_DB=/data/GeoLite2-Country.mmdb
 

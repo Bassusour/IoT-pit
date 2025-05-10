@@ -103,10 +103,12 @@ function stopServer() {
 
 function status() {
     # TODO: Only check for single server
+    :
 }
 
 function stopServer() {
     # TODO
+    :
 }
 
 case "$1" in
