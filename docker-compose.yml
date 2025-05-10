@@ -87,5 +87,4 @@ services:
 
 volumes:
   grafana-storage:
-  # prometheus-storage:
   tarpit-sock:
