@@ -365,7 +365,7 @@ int main(int argc, char* argv[]) {
     httpPort = atoi(argv[1]);
     ssdpPort = atoi(argv[2]);
     delay = atoi(argv[3]);
-    maxNoClients = atoi(argv[0]);
+    maxNoClients = atoi(argv[4]);
     openlog("upnp_tarpit", LOG_PID | LOG_CONS, LOG_USER);
     initializeStats();
     setFdLimit(maxNoClients);

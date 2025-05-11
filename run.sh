@@ -1,4 +1,5 @@
 #!/bin/bash
+# set -x  # Debug
 
 BIN_DIR="/usr/local/bin"
 PID_DIR="/tmp/tarpits"
@@ -58,8 +59,7 @@ function startTelnet() {
     local maxNoClients=$3
     echo "Starting telnet_pit with port=$port, delay=$delay, max-no-clients=$maxNoClients"
 
-    "$BIN_DIR/telnet_pit" "$port" "$delay" "$maxNoClients" &
-    echo $! > "$PID_DIR/telnet_pit.pid"
+    exec "$BIN_DIR/telnet_pit" "$port" "$delay" "$maxNoClients"
 }
 
 function startUpnp() {
@@ -72,8 +72,7 @@ function startUpnp() {
     local maxNoClients=$4
     echo "Starting upnp_pit with http-port=$httpPort ssdp-port=$ssdpPort delay=$delay max-no-clients=$maxNoClients"
 
-    "$BIN_DIR/upnp_pit" "$httpPort" "$ssdpPort" "$delay" "$maxNoClients" &
-    echo $! > "$PID_DIR/upnp_pit.pid"
+    exec "$BIN_DIR/upnp_pit" "$httpPort" "$ssdpPort" "$delay" "$maxNoClients"
 }
 
 function startMqtt() {
@@ -86,8 +85,8 @@ function startMqtt() {
     local maxPacketsPerClient=$5
     local maxNoClients=$6
     echo "Starting mqtt_pit with port=$port maxEvents=$maxEvents epollTimeout=$epollTimeout pubrelInterval=$pubrelInterval maxPackets=$maxPackets maxNoClients=$maxNoClients"
-    "$BIN_DIR/mqtt_pit" "$port" "$maxEvents" "$epollTimeoutInterval" "$pubrelInterval" "$maxPacketsPerClient" "$maxNoClients" &
-    echo $! > "$PID_DIR/mqtt_pit.pid"
+    
+    exec "$BIN_DIR/mqtt_pit" "$port" "$maxEvents" "$epollTimeoutInterval" "$pubrelInterval" "$maxPacketsPerClient" "$maxNoClients"
 }
 
 function stopServer() {

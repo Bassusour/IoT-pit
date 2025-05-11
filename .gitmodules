@@ -1,0 +1,3 @@
+[submodule "endlessh"]
+	path = endlessh
+	url = https://github.com/skeeto/endlessh.git

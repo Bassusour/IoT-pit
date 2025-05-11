@@ -20,14 +20,14 @@ BIN_DIR = bin
 # Default Rule
 all: $(TELNET_TARGET) $(UPNP_TARGET) $(MQTT_TARGET) $(GO_TARGET)
 
-$(TELNET_TARGET): $(TELNET_SRC) | $(BIN_DIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(STRUCTS)
+$(TELNET_TARGET): $(TELNET_SRC) $(STRUCTS) | $(BIN_DIR)
+	$(CC) $(CFLAGS) -o $@ $^ 
 
-$(UPNP_TARGET): $(UPNP_SRC) | $(BIN_DIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(STRUCTS)
+$(UPNP_TARGET): $(UPNP_SRC) $(STRUCTS) | $(BIN_DIR)
+	$(CC) $(CFLAGS) -o $@ $^ 
 
-$(MQTT_TARGET): $(MQTT_SRC) | $(BIN_DIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(STRUCTS)
+$(MQTT_TARGET): $(MQTT_SRC) $(STRUCTS) | $(BIN_DIR)
+	$(CC) $(CFLAGS) -o $@ $^ 
 
 $(GO_TARGET): $(GO_SRCS) | $(BIN_DIR)
 	cd $(GO_DIR) && go build -o ../$(GO_TARGET)

@@ -58,6 +58,14 @@ services:
         hard: "${MQTT_MAX_NO_CLIENTS}"
     command: ["start", "mqtt", "${MQTT_PORT}", "${MQTT_MAX_EVENTS}", "${MQTT_EPOLL_TIMEOUT_INTERVAL_MS}", "${MQTT_PUBREL_INTERVAL_MS}", "${MQTT_MAX_PACKETS_PER_CLIENTS}", "${MQTT_MAX_NO_CLIENTS}"]
 
+  endlessh:
+    build:
+      context: ./endlessh
+      dockerfile: Dockerfile
+    container_name: endlessh
+    ports:
+      - "2222:2222"
+
   prometheus:
     image: prom/prometheus
     container_name: prometheus
