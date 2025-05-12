@@ -117,7 +117,7 @@ void sendMetric(const char* message) {
 
     ssize_t sent = sendto(sock, message, strlen(message), 0, (struct sockaddr*)&addr, sizeof(addr));
     if (sent < 0) {
-        fprintf(stderr, "sendto failed. Message was: %s", message);
+        perror("sendto failed");
     }
     close(sock);
 }

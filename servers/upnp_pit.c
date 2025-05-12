@@ -321,7 +321,7 @@ void *httpServer(void *arg) {
                 }
 
                 char msg[256];
-                snprintf(msg, sizeof(msg), "%s accept %s\n",
+                snprintf(msg, sizeof(msg), "%s connect %s\n",
                     SERVER_ID, newClient->ipaddr);
                 printf("%s", msg);
                 sendMetric(msg);
@@ -333,8 +333,8 @@ void *httpServer(void *arg) {
                 // statsUpnp.otherHttpRequests += 1;
 
                 char msg[256];
-                snprintf(msg, sizeof(msg), "%s otherHttpRequest %s %s %s\n",
-                    SERVER_ID, method, url, inet_ntoa(clientAddr.sin_addr));
+                snprintf(msg, sizeof(msg), "%s otherHttpRequests %s %s\n",
+                    SERVER_ID, method, url);
                 printf("%s", msg);
                 sendMetric(msg);
 
@@ -359,6 +359,13 @@ void initializeStats(){
 }
 
 int main(int argc, char* argv[]) {
+    // testing
+    char msg[256];
+    snprintf(msg, sizeof(msg), "%s connect %s\n",
+        SERVER_ID, "82.211.213.247");
+    fprintf(stderr, "%s", msg);
+    sendMetric(msg);
+    
     (void)argc;
     httpPort = atoi(argv[1]);
     ssdpPort = atoi(argv[2]);

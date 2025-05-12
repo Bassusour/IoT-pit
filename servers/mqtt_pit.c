@@ -849,9 +849,14 @@ int main(int argc, char* argv[]) {
                 }
                 
                 addClient(newClient);
-                if(statsMqtt.mostConcurrentConnections < HASH_COUNT(clients)) {
-                    statsMqtt.mostConcurrentConnections = HASH_COUNT(clients);
-                }
+                char msg[256];
+                snprintf(msg, sizeof(msg), "%s connect %s\n",
+                    SERVER_ID, newClient->ipaddr);
+                printf("%s", msg);
+                sendMetric(msg);
+                // if(statsMqtt.mostConcurrentConnections < HASH_COUNT(clients)) {
+                //     statsMqtt.mostConcurrentConnections = HASH_COUNT(clients);
+                // }
             } else {
                 struct mqttClient* client = lookupClient(currentFd);
                 ssize_t bytesRead = read(currentFd,

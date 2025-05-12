@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"os"
+	"strconv"
 
 	// "github.com/oschwald/geoip2-golang"
 	"github.com/oschwald/maxminddb-golang/v2"
@@ -17,10 +18,18 @@ import (
 )
 
 type metrics struct {
-	totalConnects  *prometheus.CounterVec
-	totalTrappedTime *prometheus.CounterVec
-	activeClients *prometheus.GaugeVec
-	clientsByIP *prometheus.GaugeVec
+	telnetTotalConnects  prometheus.Counter
+	telnetTotalTrappedTime prometheus.Counter
+	telnetActiveClients prometheus.Gauge
+	telnetClients *prometheus.CounterVec
+
+	upnpTotalConnects prometheus.Counter
+	upnpTotalTrappedTime prometheus.Counter
+	upnpActiveClients prometheus.Gauge
+	upnpOtherHttpRequests *prometheus.CounterVec
+	upnpMSearchRequests *prometheus.CounterVec
+	upnpNonMSearchRequests *prometheus.CounterVec
+	upnpClients *prometheus.CounterVec
 }
 
 // Global variable
@@ -28,44 +37,74 @@ var db *maxminddb.Reader
 
 func NewMetrics() *metrics {
 	m := &metrics{
-		totalConnects: prometheus.NewCounterVec(prometheus.CounterOpts{
+		telnetTotalConnects: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "telnet_pit_total_connects",
-			Help: "Total client connections",
-		}, []string{"server"}),
-		totalTrappedTime: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Help: "Total client connections for telnet",
+		}),
+		telnetTotalTrappedTime: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "telnet_pit_total_trapped_time_ms",
-			Help: "Total time clients were trapped (ms)",
-		}, []string{"server"}),
-		activeClients: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Help: "Total time clients were trapped (ms) for telnet",
+		}),
+		telnetActiveClients: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "telnet_pit_current_connected_clients",
-			Help: "Currently connected clients",
-		}, []string{"server"}),
-		clientsByIP: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Help: "Currently connected clients for telnet",
+		}),
+		telnetClients: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "telnet_pit_clients",
-			Help: "Connected clients by IP (used for geolocation)",
-		}, []string{"server", "ip", "country", "latitude", "longitude"}),
+			Help: "Connected clients for telnet",
+		}, []string{"ip", "country", "latitude", "longitude"}),
+		// -------------
+		upnpTotalConnects: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "upnp_pit_total_connects",
+			Help: "Total http GET requests for the fake .xml file",
+		}),
+		upnpTotalTrappedTime: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "upnp_pit_total_trapped_time_ms",
+			Help: "Total time clients were trapped (ms) for upnp",
+		}),
+		upnpActiveClients: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "upnp_pit_current_connected_clients",
+			Help: "Currently connected clients for upnp",
+		}),
+		upnpClients: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "upnp_pit_clients",
+			Help: "Connected clients for upnp",
+		}, []string{"ip", "country", "latitude", "longitude"}),
+		upnpOtherHttpRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "upnp_other_http_requests",
+			Help: "Number of http requests that are not for the .xml file",
+		}, []string{"method", "url"}),
+		upnpMSearchRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "upnp_M-Search_requests",
+			Help: "Number of M-Search requests",
+		}, []string{"ip"}),
+		upnpNonMSearchRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "upnp_non_M-Search_requests",
+			Help: "Number of SSDP requests that are not M-SEARCH",
+		}, []string{"ip"}),
 	}
-	prometheus.MustRegister(m.totalConnects, m.totalTrappedTime, m.activeClients, m.clientsByIP)
+	prometheus.MustRegister(m.telnetTotalConnects, m.telnetTotalTrappedTime, m.telnetActiveClients, m.telnetClients,
+		m.upnpTotalConnects, m.upnpTotalTrappedTime, m.upnpActiveClients, m.upnpClients, m.upnpOtherHttpRequests, m.upnpMSearchRequests, m.upnpNonMSearchRequests)
 	return m
 }
 
 func main() {
 	var err error
-    // db, err := geoip2.Open("GeoLite2-Country.mmdb")
 	geoliteDbPath := os.Getenv("GEO_DB")
-	db, err := maxminddb.Open(geoliteDbPath)
+	// fmt.Print(geoliteDbPath+"\n")
+	db, err = maxminddb.Open(geoliteDbPath)
     if err != nil {
         log.Fatal("Cannot open GeoLite2 database: ", err)
     }
     defer db.Close()
 
-	var server = "telnet"
+	// var server = "telnet"
 	// Register metrics
 	m := NewMetrics()
-	m.totalConnects.WithLabelValues(server).Add(1)
-	m.totalTrappedTime.WithLabelValues(server).Add(2)
-	m.activeClients.WithLabelValues(server).Set(3)
-	m.clientsByIP.WithLabelValues(server, "82.211.212.0", "Denmark", "55.676097", "12.568337").Set(4)
+	// m.telnetTotalConnects.WithLabelValues(server).Add(1)
+	// m.telnetTotalTrappedTime.WithLabelValues(server).Add(2)
+	// m.telnetActiveClients.WithLabelValues(server).Set(3)
+	// m.telnetClients.WithLabelValues(server, "82.211.212.0", "Denmark", "55.676097", "12.568337").Set(4)
 
 	// Start socket listener
 	go listenForMetrics("/tmp/tarpit_exporter.sock", m)
@@ -95,39 +134,67 @@ func listenForMetrics(socketPath string, metrics *metrics) {
 			log.Println("Read error:", err)
 			continue
 		}
-
 		handleMetric(strings.TrimSpace(string(buf[:n])), metrics)
 	}
 }
 
 func handleMetric(line string, metrics *metrics) {
 	fields := strings.Fields(line)
-	fmt.Print(fields)
-	// if len(fields) < 2 {
-	// 	return
-	// }
+	log.Println(fields)
+
 	server := fields[0]
+	command := fields[1]
 
-	switch fields[0] {
+	switch command {
 	case "connect":
-		ip := fields[1]
-		// totalConnects.Inc()
-		// activeClients.Inc()
-		// clientsByIP.WithLabelValues(ip).Set(1)
-		gm := geoLookup(ip)
-		lat := CapitalCoordinates[gm]
-		lon := CapitalCoordinates[gm]
-        metrics.clientsByIP.WithLabelValues(ip, server, gm, fmt.Sprintf("%f", lat), fmt.Sprintf("%f", lon)).Inc()
-
+		ip := fields[2]
+		country := geoLookup(ip)
+		lat := CapitalCoordinates[country].Latitude
+		lon := CapitalCoordinates[country].Longitude
+		handleConnect(server, country, lat, lon, ip, metrics)
 	case "disconnect":
-		// if len(fields) != 3 {
-		// 	return
-		// }
-		ip := fields[1]
-		timeMs := parseTimeMs(fields[2])
-		metrics.totalTrappedTime.WithLabelValues(server).Add(float64(timeMs))
-		metrics.activeClients.WithLabelValues(server).Dec()
-		metrics.clientsByIP.WithLabelValues(ip).Set(0)
+		// ip := fields[2]
+		parsedTimeTrapped, err := strconv.ParseUint(fields[3], 10, 64)
+		if err != nil {
+			fmt.Println("Error parsing timeTrapped:", err)
+			return
+		}
+		timeTrapped := float64(parsedTimeTrapped)
+		handleDisconnect(server, timeTrapped, metrics)
+	case "otherHttpRequests":
+		method := fields[2]
+		url := fields[3]
+		metrics.upnpOtherHttpRequests.WithLabelValues(method, url).Inc()
+	case "M-SEARCH":
+		ip := fields[2]
+		metrics.upnpMSearchRequests.WithLabelValues(ip).Inc()
+	case "non-M-SEARCH":
+		ip := fields[2]
+		metrics.upnpNonMSearchRequests.WithLabelValues(ip).Inc()
+	}
+}
+
+func handleConnect(server string, country string, lat float64, lon float64, ip string, metrics *metrics) {
+	switch server {
+	case "telnet":
+		metrics.telnetTotalConnects.Inc()
+		metrics.telnetActiveClients.Inc()
+		metrics.telnetClients.WithLabelValues(ip, country, fmt.Sprintf("%f", lat), fmt.Sprintf("%f", lon)).Inc()
+	case "UPnP":
+		metrics.upnpTotalConnects.Inc()
+		metrics.upnpActiveClients.Inc()
+		metrics.upnpClients.WithLabelValues(ip, country, fmt.Sprintf("%f", lat), fmt.Sprintf("%f", lon)).Inc()
+	}
+}
+
+func handleDisconnect(server string, timeTrapped float64, metrics *metrics) {
+	switch server {
+	case "telnet":
+		metrics.telnetActiveClients.Dec()
+		metrics.telnetTotalTrappedTime.Add(timeTrapped)
+	case "upnp":
+		metrics.upnpActiveClients.Dec()
+		metrics.upnpTotalTrappedTime.Add(timeTrapped)
 	}
 }
 
@@ -139,10 +206,6 @@ func parseTimeMs(s string) int64 {
 
 func geoLookup(ipStr string) string {
     ip := netip.MustParseAddr(ipStr)
-    // if ip == nil {
-	// 	return "ip is nil"
-    //     // return geoMeta{}
-    // }
 
 	var record struct {
 		Country struct {
@@ -154,11 +217,6 @@ func geoLookup(ipStr string) string {
 		log.Panic(err)
 	}
 	fmt.Print(record.Country.ISOCode)
-
-    // record, err := db.Country(ip)
-    // if err != nil {
-    //     return geoMeta{}
-    // }
 
 	return record.Country.ISOCode
 }

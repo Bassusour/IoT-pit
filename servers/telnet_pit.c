@@ -17,7 +17,7 @@
 // #define DELAY_MS 100
 // #define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
 // #define FD_LIMIT 4096
-#define SERVER_ID "Telnet"
+#define SERVER_ID "telnet"
 
 #define IAC 255
 #define DO 253
@@ -52,6 +52,13 @@ void initializeStats(){
 }
 
 int main(int argc, char *argv[]) {
+    // testing
+    char msg[256];
+    snprintf(msg, sizeof(msg), "%s connect %s\n",
+        SERVER_ID, "82.211.213.247");
+    fprintf(stderr, "%s", msg);
+    sendMetric(msg);
+
     (void)argc;
     port = atoi(argv[1]);
     delay = atoi(argv[2]);
@@ -156,7 +163,7 @@ int main(int argc, char *argv[]) {
             }
 
             char msg[256];
-            snprintf(msg, sizeof(msg), "%s connected %s\n",
+            snprintf(msg, sizeof(msg), "%s connect %s\n",
                 SERVER_ID, newClient->ipaddr);
             printf("%s", msg);
             sendMetric(msg);

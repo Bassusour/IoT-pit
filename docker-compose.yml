@@ -26,6 +26,8 @@ services:
         soft: "${TELNET_MAX_NO_CLIENTS}"
         hard: "${TELNET_MAX_NO_CLIENTS}"
     command: ["start", "telnet", "${TELNET_PORT}", "${TELNET_DELAY_MS}", "${TELNET_MAX_NO_CLIENTS}"]
+    depends_on:
+      - prometheus-exporter
 
   upnp_pit:
     build:
@@ -42,6 +44,8 @@ services:
         soft: "${UPNP_MAX_NO_CLIENTS}"
         hard: "${UPNP_MAX_NO_CLIENTS}"
     command: ["start", "upnp", "${UPNP_HTTP_PORT}", "${UPNP_SSDP_PORT}", "${UPNP_DELAY_MS}", "${UPNP_MAX_NO_CLIENTS}"]
+    depends_on:
+      - prometheus-exporter
 
   mqtt_pit:
     build:
@@ -57,6 +61,8 @@ services:
         soft: "${MQTT_MAX_NO_CLIENTS}"
         hard: "${MQTT_MAX_NO_CLIENTS}"
     command: ["start", "mqtt", "${MQTT_PORT}", "${MQTT_MAX_EVENTS}", "${MQTT_EPOLL_TIMEOUT_INTERVAL_MS}", "${MQTT_PUBREL_INTERVAL_MS}", "${MQTT_MAX_PACKETS_PER_CLIENTS}", "${MQTT_MAX_NO_CLIENTS}"]
+    depends_on:
+      - prometheus-exporter
 
   endlessh:
     build:
