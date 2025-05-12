@@ -11,7 +11,6 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <signal.h>
-#include <syslog.h>
 #include <time.h>
 #include <sys/socket.h>
 #include "../shared/structs.h"
@@ -23,6 +22,7 @@
 // #define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
 // #define MAX_PACKETS_PER_CLIENTS 50
 // #define FD_LIMIT 4096
+#define SERVER_ID "MQTT"
 
 int port;
 int maxEvents;
@@ -48,10 +48,10 @@ void deleteClient(struct mqttClient* client) {
     HASH_DEL(clients, client);
 }
 
-void heartbeatLog() {
-    syslog(LOG_INFO, "Server is running with %d connected clients. Number of most concurrent connected clients is %d", HASH_COUNT(clients), statsMqtt.mostConcurrentConnections);
-    syslog(LOG_INFO, "The total amount of wasted time is %lld. Total connected clients: %ld", statsMqtt.totalWastedTime, statsMqtt.totalConnects);
-}
+// void heartbeatLog() {
+//     syslog(LOG_INFO, "Server is running with %d connected clients. Number of most concurrent connected clients is %d", HASH_COUNT(clients), statsMqtt.mostConcurrentConnections);
+//     syslog(LOG_INFO, "The total amount of wasted time is %lld. Total connected clients: %ld", statsMqtt.totalWastedTime, statsMqtt.totalConnects);
+// }
 
 void initializeStats(){
     statsMqtt.totalConnects = 0;
@@ -67,7 +67,7 @@ bool decodeVarint(const uint8_t* buffer, uint32_t packetEnd, uint32_t* offset, u
 
     do {
         if (*offset >= packetEnd) {
-            syslog(LOG_ERR, "Incomplete variable byte integer");
+            fprintf(stderr, "Incomplete variable byte integer");
             return false;
         }
         byte = buffer[(*offset)++];
@@ -76,7 +76,7 @@ bool decodeVarint(const uint8_t* buffer, uint32_t packetEnd, uint32_t* offset, u
         bytesRead++;
 
         if (bytesRead > 4) {
-            syslog(LOG_ERR, "Variable byte integer exceeds maximum length");
+            fprintf(stderr, "Variable byte integer exceeds maximum length");
             return false;
         }
     } while ((byte & 0b10000000) != 0);
@@ -87,7 +87,7 @@ bool decodeVarint(const uint8_t* buffer, uint32_t packetEnd, uint32_t* offset, u
 
 uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqttClient* client){
     if (offset + 2 > packetEnd) {
-        syslog(LOG_ERR, "CONNECT request too small for fixed header");
+        fprintf(stderr, "CONNECT request too small for fixed header");
         return 0x80; // Unspecified error
     } 
 
@@ -98,7 +98,7 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
     if (memcmp(&buffer[offset], "MQTT", 4) != 0 && !isV31){
         char wrong[7] = {0};
         memcpy(wrong, &buffer[offset], protocolName < 7 ? protocolName : 4);
-        syslog(LOG_ERR, "Malformed CONNECT request. Expected \"MQTT\" or \"MQIsdp\" but got \"%s\"", wrong);
+        fprintf(stderr, "Malformed CONNECT request. Expected \"MQTT\" or \"MQIsdp\" but got \"%s\"", wrong);
         return 0x01; // Unacceptable protocol version
     } 
     if(isV31) {
@@ -109,27 +109,33 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
 
     // Protocol Version
     if (offset >= packetEnd) {
-        syslog(LOG_ERR, "No protocol version given for CONNECT request");
+        fprintf(stderr, "No protocol version given for CONNECT request");
         return 0x80;
     }
     uint8_t proto_level = buffer[offset++];
+    char msg[256];
     if(proto_level == 0b101) {
-        syslog(LOG_INFO, "Client connected with v5");
+        snprintf(msg, sizeof(msg), "%s CONNECT %s\n",
+            SERVER_ID, "v5");
         client->version = V5;
      } else if (proto_level == 0b100) {
-        syslog(LOG_INFO, "Client connected with v3.1.1");
+        snprintf(msg, sizeof(msg), "%s CONNECT %s\n",
+        SERVER_ID, "v3.1.1");
         client->version = V311;
     } else if (proto_level == 0b011) {
-        syslog(LOG_INFO, "Client connected with v3.1");
+        snprintf(msg, sizeof(msg), "%s CONNECT %s\n",
+        SERVER_ID, "v3.1");
         client->version = V31;
     } else {
-        syslog(LOG_ERR, "Unsupported MQTT version: %d", proto_level);
+        fprintf(stderr, "Unsupported MQTT version: %d", proto_level);
         return 0x01; // Unacceptable protocol version
     }
+    printf("%s", msg);
+    sendMetric(msg);
 
     // Connect Flags
     if (offset >= packetEnd) {
-        syslog(LOG_ERR, "No connect flags supplied");
+        fprintf(stderr, "No connect flags supplied");
         return 0x80;
     }
     uint8_t connect_flags = buffer[offset++];
@@ -137,12 +143,12 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
 
     // Keep Alive
     if (offset + 2 > packetEnd){
-        syslog(LOG_ERR, "No keep-alive value supplied");
+        fprintf(stderr, "No keep-alive value supplied");
         return 0x80;
     } 
     int keepAlive = (buffer[offset] << 8) | buffer[offset + 1];
     if(keepAlive < 0) {
-        syslog(LOG_ERR, "Negative keep-alive value received: %d", keepAlive);
+        fprintf(stderr, "Negative keep-alive value received: %d", keepAlive);
         return 0x80;
     }
     client->keepAlive = keepAlive;
@@ -153,6 +159,7 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
         uint32_t varint;
         bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
         if(!decodeSuccess) {
+            fprintf(stderr, "Unable to decode varint");
             return 0x80;
         }
 
@@ -168,7 +175,7 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
     offset += 2;
 
     if (offset + clientIdLength > packetEnd) {
-        syslog(LOG_ERR, "clientId too long for packet");
+        fprintf(stderr, "clientId too long for packet");
         return 0x02;
     }
     offset += clientIdLength;
@@ -177,14 +184,14 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
     char username[256] = {0};
     if (connect_flags & 0b10000000) {
         if (offset + 2 > packetEnd) {
-            syslog(LOG_ERR, "Username flag supplied, but with no username");
+            fprintf(stderr, "Username flag supplied, but with no username");
             return 0x80;
         } 
         uint16_t user_len = (buffer[offset] << 8) | buffer[offset + 1];
         offset += 2;
 
         if (offset + user_len > packetEnd) {
-            syslog(LOG_ERR, "Username too long");
+            fprintf(stderr, "Username too long");
             return 0x80;
         }
 
@@ -198,13 +205,13 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
     char password[256] = {0};
     if (connect_flags & 0b1000000) {
         if (offset + 2 > packetEnd) {
-            syslog(LOG_ERR, "Password flag supplied, but with no password");
+            fprintf(stderr, "Password flag supplied, but with no password");
             return 0x80;
         } 
         uint16_t passwordLength = (buffer[offset] << 8) | buffer[offset + 1];
         offset += 2;
         if (offset + passwordLength > packetEnd){
-            syslog(LOG_ERR, "Password too long");
+            fprintf(stderr, "Password too long");
             return 0x80;
         }
 
@@ -215,14 +222,19 @@ uint8_t readConnreq(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct
         // syslog(LOG_INFO, "Password: %s\n", password);
     }
 
-    syslog(LOG_INFO, "Successfully read CONNECT request with keep-alive: %d username: %s password: %s", keepAlive, username, password);
+    // syslog(LOG_INFO, "Successfully read CONNECT request with keep-alive: %d username: %s password: %s", keepAlive, username, password);
+    // char msg[256];
+    snprintf(msg, sizeof(msg), "%s credentials %.100s %.100s\n",
+        SERVER_ID, username, password);
+    printf("%s", msg);
+    sendMetric(msg);
     return 0x00; // Success
 }
 
 void readSubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, enum MqttVersion version) {
     // syslog(LOG_INFO, "Reading SUBSCRIBE request");
     if (offset + 2 > packetEnd) {
-        syslog(LOG_ERR, "SUBSCRIBE request too short for fixed header");
+        fprintf(stderr, "SUBSCRIBE request too short for fixed header");
         return;
     }
 
@@ -232,7 +244,7 @@ void readSubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, enum Mq
         uint32_t varint;
         bool decodeSuccess = decodeVarint(buffer, packetEnd, &offset, &varint);
         if(!decodeSuccess) {
-            syslog(LOG_INFO, "SUBSCRIBE Failed decoding varint");
+            fprintf(stderr, "SUBSCRIBE Failed decoding varint");
             return;
         }
 
@@ -241,7 +253,7 @@ void readSubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, enum Mq
     }
 
     if (offset + 3 > packetEnd) { // 2 bytes topic + 1 byte options
-        syslog(LOG_ERR, "SUBSCRIBE topic section too short");
+        fprintf(stderr, "SUBSCRIBE topic section too short");
         return;
     }
 
@@ -249,7 +261,7 @@ void readSubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, enum Mq
     offset += 2;
 
     if (offset + topicLength + 1 > packetEnd) {
-        syslog(LOG_ERR, "SUBSCRIBE topic filter length exceeds packet size");
+        fprintf(stderr, "SUBSCRIBE topic filter length exceeds packet size");
         return;
     }
 
@@ -262,7 +274,13 @@ void readSubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, enum Mq
     uint8_t options = buffer[offset++];
     uint8_t qos = options & 0b11;
 
-    syslog(LOG_INFO, "Successfully read SUBSCRIBE request with topic: %s and QoS %d", topic, qos);
+    char msg[256];
+    snprintf(msg, sizeof(msg), "%s SUBSCRIBE %.100s %d\n",
+        SERVER_ID, topic, qos);
+    printf("%s", msg);
+    sendMetric(msg);
+
+    // syslog(LOG_INFO, "Successfully read SUBSCRIBE request with topic: %s and QoS %d", topic, qos);
     return;
 }
 
@@ -294,7 +312,7 @@ bool sendConnack(struct mqttClient* client, uint8_t reasonCode) {
     int size = client->version == V5 ? 8 : 4;
     uint8_t* arr = malloc(size);
     if (!arr) {
-        syslog(LOG_ERR, "malloc failed for connack packet");
+        fprintf(stderr, "malloc failed for connack packet");
         return false;
     } 
 
@@ -317,11 +335,16 @@ bool sendConnack(struct mqttClient* client, uint8_t reasonCode) {
     ssize_t w = write(client->fd, arr, size);
     free(arr);
     if (w == -1) {
-        syslog(LOG_ERR, "sendConnack: write failed. May retry.");
+        fprintf(stderr, "sendConnack: write failed. May retry.");
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
             return false;
         }
     } else {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "%s CONNACK\n",
+            SERVER_ID);
+        printf("%s", msg);
+        sendMetric(msg);
         // syslog(LOG_INFO, "Sent CONNACK to client fd=%d\n", client->fd);
     }
 
@@ -330,7 +353,7 @@ bool sendConnack(struct mqttClient* client, uint8_t reasonCode) {
 
 void readPublish(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, enum MqttVersion version) {
     if (offset + 2 > packetEnd) {
-        syslog(LOG_ERR, "PUBLISH packet too short for topic length");
+        fprintf(stderr, "PUBLISH packet too short for topic length");
         return;
     }
 
@@ -338,7 +361,7 @@ void readPublish(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, enum Mqtt
     offset += 2;
 
     if (offset + topicLen > packetEnd) {
-        syslog(LOG_ERR, "PUBLISH topic exceeds packet bounds");
+        fprintf(stderr, "PUBLISH topic exceeds packet bounds");
         return;
     }
 
@@ -372,12 +395,16 @@ void readPublish(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, enum Mqtt
     memcpy(payload, &buffer[offset], payloadLen < 511 ? payloadLen : 511);
     payload[copyLen] = '\0';
 
-    syslog(LOG_INFO, "PUBLISH received. Topic: %s, Payload: %s, QoS: %d", topic, payload, qos);
+    char msg[256];
+    snprintf(msg, sizeof(msg), "%s PUBLISH %.100s %d\n",
+        SERVER_ID, topic, qos);
+    sendMetric(msg);
+    printf("PUBLISH received. Topic: %s, Payload: %s, QoS: %d\n", topic, payload, qos);
 }
 
 void readUnsubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, enum MqttVersion version) {
     if (offset + 2 > packetEnd) {
-        syslog(LOG_ERR, "UNSUBSCRIBE packet too short");
+        fprintf(stderr, "UNSUBSCRIBE packet too short");
         return;
     }
 
@@ -405,7 +432,12 @@ void readUnsubscribe(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, enum 
         memcpy(topic, &buffer[offset], topicLen < 255 ? topicLen : 255);
         offset += topicLen;
 
-        syslog(LOG_INFO, "UNSUBSCRIBE received for topic: %s (Packet ID: %u)", topic, packetId);
+        char msg[256];
+        snprintf(msg, sizeof(msg), "%s UNSUBSCRIBE %.200s\n",
+            SERVER_ID, topic);
+        sendMetric(msg);
+
+        printf("UNSUBSCRIBE received for topic: %s (Packet ID: %u)\n", topic, packetId);
     }
 }
 
@@ -438,7 +470,7 @@ bool sendPublish(struct mqttClient* client, const char* topic, const char* messa
     ssize_t packetLength = fixedHeaderLength + remainingLength;
     uint8_t* packet = malloc(packetLength);
     if (!packet) {
-        syslog(LOG_ERR, "Out of memory for publish packet");
+        fprintf(stderr, "Out of memory for publish packet");
         return false;
     }
 
@@ -466,7 +498,7 @@ bool sendPublish(struct mqttClient* client, const char* topic, const char* messa
     ssize_t w = write(client->fd, packet, packetLength);
     free(packet);
     if (w < 0) {
-        syslog(LOG_ERR, "sendPublish: write failed. May retry.");
+        fprintf(stderr, "sendPublish: write failed. May retry.");
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
             return false;
         }
@@ -479,7 +511,7 @@ bool sendPublish(struct mqttClient* client, const char* topic, const char* messa
 
 void readPubrec(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqttClient* client) {
     if (offset + 2 > packetEnd) {
-        syslog(LOG_ERR, "PUBREC packet too short for Packet Identifier\n");
+        fprintf(stderr, "PUBREC packet too short for Packet Identifier\n");
         return;
     }
 
@@ -491,7 +523,7 @@ void readPubrec(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqt
             return;
         }
         uint8_t reasonCode = buffer[offset++];
-        syslog(LOG_INFO, "PUBREC: Reason code: 0x%02X", reasonCode);
+        printf("PUBREC: Reason code: 0x%02X\n", reasonCode);
 
         if (offset >= packetEnd) {
             return;
@@ -513,20 +545,20 @@ void readPubrec(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqt
             switch (propId) {
                 case 0x1F: {  // Reason String
                     if (offset + 2 > propsEnd) {
-                        syslog(LOG_ERR, "PUBREC: Malformed Reason String");
+                        fprintf(stderr, "PUBREC: Malformed Reason String");
                         return;
                     }
                     uint16_t strLen = (buffer[offset] << 8) | buffer[offset + 1];
                     offset += 2;
                     if (offset + strLen > propsEnd) {
-                        syslog(LOG_ERR, "PUBREC: Truncated Reason String");
+                        fprintf(stderr, "PUBREC: Truncated Reason String");
                         return;
                     }
                     char reasonStr[256] = {0};
                     uint16_t copyLen = strLen < 255 ? strLen : 255;
                     memcpy(reasonStr, &buffer[offset], copyLen);
                     offset += strLen;
-                    syslog(LOG_INFO, "PUBREC: Reason String: %s", reasonStr);
+                    printf("PUBREC: Reason String: %s\n", reasonStr);
                     break;
                 }
 
@@ -551,16 +583,20 @@ void readPubrec(uint8_t* buffer, uint32_t packetEnd, uint32_t offset, struct mqt
                     memcpy(val, &buffer[offset], valLen < 127 ? valLen : 127);
                     offset += valLen;
 
-                    syslog(LOG_INFO, "PUBREC: User Property: %s = %s", key, val);
+                    printf("PUBREC: User Property: %s = %s\n", key, val);
                     break;
                 }
                 default:
-                    syslog(LOG_WARNING, "PUBREC: Unknown property ID: 0x%02X", propId);
+                    printf("PUBREC: Unknown property ID: 0x%02X\n", propId);
                     return;
             }
         }
     }
 
+    char msg[256];
+    snprintf(msg, sizeof(msg), "%s PUBREC\n",
+        SERVER_ID);
+    sendMetric(msg);
     // syslog(LOG_INFO, "Received PUBREC for fd=%d and packet ID: %d\n", client->fd, packetId);
 }
 
@@ -585,7 +621,7 @@ bool sendPubrel(struct mqttClient* client, uint16_t packetId) {
 
     ssize_t w = write(client->fd, arr, size);
     if (w == -1) {
-        syslog(LOG_ERR, "sendPubrel: write failed");
+        fprintf(stderr, "sendPubrel: write failed");
         return false;
     }
 
@@ -596,7 +632,7 @@ bool sendPubrel(struct mqttClient* client, uint16_t packetId) {
 void readPubcomp(uint32_t packetEnd, uint32_t offset) {
     // syslog(LOG_INFO, "Received PUBCOMP");
     if (offset + 2 > packetEnd) {
-        syslog(LOG_ERR, "PUBCOMP packet too short for Packet Identifier");
+        fprintf(stderr, "PUBCOMP packet too short for Packet Identifier");
         return;
     }
 
@@ -610,21 +646,24 @@ bool sendPingresp(struct mqttClient* client) {
     ssize_t w = write(client->fd, packet, sizeof(packet));
 
     if (w == -1) {
-        syslog(LOG_ERR, "sendPingresp: write failed. May retry.");
+        fprintf(stderr, "sendPingresp: write failed. May retry.");
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
             return false;
         }
     } else {
-        syslog(LOG_INFO, "Sent PINGRESP to client (fd=%d)\n", client->fd);
+        fprintf(stderr, "Sent PINGRESP to client (fd=%d)\n", client->fd);
     }
     return true;
 }
 
 void disconnectClient(struct mqttClient* client, int epollFd, long long now){
     long long wastedTime = now - client->timeOfConnection;
-    statsMqtt.totalWastedTime += wastedTime;
-    syslog(LOG_INFO, "Client removed with IP: %s with fd: %d with connected time %lld ms", 
-        client->ipaddr, client->fd, wastedTime);
+
+    char msg[256];
+    snprintf(msg, sizeof(msg), "%s disconnect %s %lld",
+        SERVER_ID, client->ipaddr, wastedTime);
+    sendMetric(msg);
+
     epoll_ctl(epollFd, EPOLL_CTL_DEL, client->fd, NULL);
     deleteClient(client);
     close(client->fd);
@@ -651,7 +690,7 @@ enum Request determineRequest(uint8_t firstByte) {
     case 0b0111:
         return PUBCOMP;
     default:
-        syslog(LOG_ERR, "Unknown request %d", firstByte >> 4);
+        fprintf(stderr, "Unknown request %d", firstByte >> 4);
         return UNSUPPORTED_REQUEST;
     }
 }
@@ -664,12 +703,12 @@ void calculateTotalPacketLengths(uint8_t *buffer, uint32_t bytesWrittenToBuffer,
 
     while (offset < bytesWrittenToBuffer) {
         if (bytesWrittenToBuffer - offset < 2) {
-            syslog(LOG_INFO, "CALCULATE: Not enough data for fixed header");
+            fprintf(stderr, "CALCULATE: Not enough data for fixed header");
             break; 
         }
 
         if (*packetCount == maxPacketsPerClient) {
-            syslog(LOG_INFO, "CALCULATE: Max count reached");
+            fprintf(stderr, "CALCULATE: Max count reached");
             break;
         }
 
@@ -680,7 +719,7 @@ void calculateTotalPacketLengths(uint8_t *buffer, uint32_t bytesWrittenToBuffer,
         // varint
         for (int i = 0; i < 4; i++) {
             if (offset + 1 + i >= bytesWrittenToBuffer) {
-                syslog(LOG_INFO, "CALCULATE: Not enough data to finish varint");
+                fprintf(stderr, "CALCULATE: Not enough data to finish varint");
                 return;
             }
             uint8_t byte = buffer[offset + 1 + i];
@@ -705,7 +744,7 @@ void calculateTotalPacketLengths(uint8_t *buffer, uint32_t bytesWrittenToBuffer,
             (*packetCount)++;
             offset += totalPacketLength;
         } else {
-            syslog(LOG_ERR, "Incomplete packet at offset %u: expected length = %u, available = %u",
+            fprintf(stderr, "Incomplete packet at offset %u: expected length = %u, available = %u",
                 offset, totalPacketLength, bytesWrittenToBuffer - offset);
             break;  // Incomplete packet
         }
@@ -726,14 +765,14 @@ int main(int argc, char* argv[]) {
     pubrelInterval = atoi(argv[4]);
     maxPacketsPerClient = atoi(argv[5]);
     maxNoClients = atoi(argv[6]);
-    openlog("mqtt_tarpit", LOG_PID | LOG_CONS, LOG_USER);
+    // openlog("mqtt_tarpit", LOG_PID | LOG_CONS, LOG_USER);
     initializeStats();
     setFdLimit(maxNoClients);
     signal(SIGPIPE, SIG_IGN);
     
     int serverSock = createServer(port);
     if (serverSock < 0) {
-        syslog(LOG_ERR, "Invalid server socket fd: %d", serverSock);
+        fprintf(stderr, "Invalid server socket fd: %d", serverSock);
         exit(EXIT_FAILURE);
     }
     
@@ -743,14 +782,14 @@ int main(int argc, char* argv[]) {
     struct epoll_event ev, eventsQueue[maxEvents];
     int epollfd = epoll_create1(0);
     if (epollfd == -1) {
-        syslog(LOG_ERR, "epoll_create1 failed");
+        fprintf(stderr, "epoll_create1 failed");
         exit(EXIT_FAILURE);
     }
 
     ev.events = EPOLLIN;
     ev.data.fd = serverSock;
     if (epoll_ctl(epollfd, EPOLL_CTL_ADD, serverSock, &ev) == -1) {
-        syslog(LOG_ERR, "epoll_ctl: server_sock");
+        fprintf(stderr, "epoll_ctl: server_sock");
         exit(EXIT_FAILURE);
     }
 
@@ -765,7 +804,7 @@ int main(int argc, char* argv[]) {
 
         int nfds = epoll_wait(epollfd, eventsQueue, maxEvents, epollTimeoutInterval);
         if (nfds == -1) {
-            syslog(LOG_ERR, "epoll_wait");
+            fprintf(stderr, "epoll_wait");
             exit(EXIT_FAILURE);
         }
 
@@ -776,12 +815,12 @@ int main(int argc, char* argv[]) {
             if (currentFd == serverSock) {
                 int clientFd = accept(serverSock, (struct sockaddr *) &clientAddr, &addrLen);
                 if (clientFd == -1) {
-                    syslog(LOG_ERR, "Failed accepting new client with error %s", strerror(errno));
+                    fprintf(stderr, "Failed accepting new client with error %s", strerror(errno));
                     continue;
                 }
                 struct mqttClient* newClient = malloc(sizeof(struct mqttClient));
                 if (newClient == NULL) {
-                    syslog(LOG_ERR, "Out of memory");
+                    fprintf(stderr, "Out of memory");
                     close(clientFd);
                     continue;
                 }
@@ -789,7 +828,7 @@ int main(int argc, char* argv[]) {
                 
                 statsMqtt.totalConnects += 1;
                 newClient->fd = clientFd;
-                strncpy(newClient->ipaddr, inet_ntoa(clientAddr.sin_addr), INET6_ADDRSTRLEN);
+                strncpy(newClient->ipaddr, inet_ntoa(clientAddr.sin_addr), INET_ADDRSTRLEN);
                 newClient->bytesWrittenToBuffer = 0;
                 newClient->lastActivityMs = now;
                 newClient->timeOfConnection = now;
@@ -803,7 +842,7 @@ int main(int argc, char* argv[]) {
                 clientEv.events = EPOLLIN;
                 clientEv.data.fd = clientFd;
                 if (epoll_ctl(epollfd, EPOLL_CTL_ADD, clientFd, &clientEv) == -1) {
-                    syslog(LOG_ERR, "Failed adding client to epoll with error %s", strerror(errno));
+                    fprintf(stderr, "Failed adding client to epoll with error %s", strerror(errno));
                     close(clientFd);
                     free(newClient);
                     continue;
@@ -823,7 +862,7 @@ int main(int argc, char* argv[]) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) {
                         continue;
                     }
-                    syslog(LOG_ERR, "Failed reading. Disconnecting client. error: %s", strerror(errno));
+                    fprintf(stderr, "Failed reading. Disconnecting client. error: %s", strerror(errno));
                     disconnectClient(client, epollfd, now);
                     continue;
                 }
@@ -831,7 +870,7 @@ int main(int argc, char* argv[]) {
                 client->bytesWrittenToBuffer += bytesRead;
 
                 if (client->bytesWrittenToBuffer >= sizeof(client->buffer)) {
-                    syslog(LOG_ERR, "Buffer full. Disconnecting client.");
+                    fprintf(stderr, "Buffer full. Disconnecting client.");
                     disconnectClient(client, epollfd, now);
                     continue;
                 }
@@ -850,7 +889,7 @@ int main(int argc, char* argv[]) {
                     uint32_t packetEnd = packetStart + packetLength;
                     
                     if (packetLength == 0 || processedPackets + packetLength > client->bytesWrittenToBuffer) {
-                        syslog(LOG_INFO, "Incomplete packet");
+                        // syslog(LOG_INFO, "Incomplete packet");
                         break; // Incomplete packet
                     }
 
@@ -860,15 +899,21 @@ int main(int argc, char* argv[]) {
                     switch (request) {
                         case CONNECT:
                             uint8_t reasonCodeConn = readConnreq(client->buffer, packetEnd, packetStart, client);
+                            if(reasonCodeConn != 0x00) {
+                                char msg[256];
+                                snprintf(msg, sizeof(msg), "%s malformedConnect",
+                                    SERVER_ID);
+                                sendMetric(msg);
+                            }
                             bool ackSuccess = sendConnack(client, reasonCodeConn);
                             if(!ackSuccess) {
-                                syslog(LOG_INFO, "Disconnecting client due to CONNACK failure");
+                                fprintf(stderr, "Disconnecting client due to CONNACK failure");
                                 disconnectClient(client, epollfd, now);
                                 break;
                             }
                             pubSuccess = sendPublish(client, "$SYS/credentials", "username=admin password=admin");
                             if(!pubSuccess) {
-                                syslog(LOG_INFO, "Disconnecting client due to publish failure");
+                                fprintf(stderr, "Disconnecting client due to publish failure");
                                 disconnectClient(client, epollfd, now);
                             }
                             break;
@@ -885,7 +930,7 @@ int main(int argc, char* argv[]) {
                             readPubcomp(packetEnd, packetStart);
                             pubSuccess = sendPublish(client, "$SYS/confidential", "username=admin123 password=admin321");
                             if(!pubSuccess) {
-                                syslog(LOG_INFO, "Disconnecting client due to publish failure");
+                                fprintf(stderr, "Disconnecting client due to publish failure");
                                 disconnectClient(client, epollfd, now);
                             }
                             break;
@@ -895,13 +940,13 @@ int main(int argc, char* argv[]) {
                         case PING:
                             bool pingSuccess = sendPingresp(client);
                             if(!pingSuccess){
-                                syslog(LOG_INFO, "Disconnecting client due to ping failure");
+                                fprintf(stderr, "Disconnecting client due to ping failure");
                                 disconnectClient(client, epollfd, now);
                                 break;
                             }
                             break;
                         case DISCONNECT:
-                            syslog(LOG_INFO, "Disconnecting client due to receiving DISCONNECT");
+                            fprintf(stderr, "Disconnecting client due to receiving DISCONNECT");
                             disconnectClient(client, epollfd, now);
                             break;
                         default:
@@ -928,7 +973,7 @@ int main(int argc, char* argv[]) {
                 c->lastPubrelMs = now;
 
                 if(!success) {
-                    syslog(LOG_INFO, "Disconnecting client due to inactivity");
+                    fprintf(stderr, "Disconnecting client due to inactivity");
                     disconnectClient(c, epollfd, now);
                     continue;
                 }
@@ -936,7 +981,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    closelog();
+    // closelog();
     close(serverSock);
     return 0;
 }

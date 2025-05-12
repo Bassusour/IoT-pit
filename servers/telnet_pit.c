@@ -10,7 +10,6 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <signal.h>
-#include <syslog.h>
 #include <time.h>
 #include "../shared/structs.h"
 
@@ -41,10 +40,10 @@ unsigned char negotiations[][3] = {
 };
 int num_options = sizeof(negotiations) / sizeof(negotiations[0]);
 
-void heartbeatLog() {
-    syslog(LOG_INFO, "Server is running with %d connected clients. Number of most concurrent connected clients is %d", clientQueueTelnet.length, statsTelnet.mostConcurrentConnections);
-    syslog(LOG_INFO, "Current statistics: wasted time: %lld ms. Total connected clients: %ld", statsTelnet.totalWastedTime, statsTelnet.totalConnects);
-}
+// void heartbeatLog() {
+//     syslog(LOG_INFO, "Server is running with %d connected clients. Number of most concurrent connected clients is %d", clientQueueTelnet.length, statsTelnet.mostConcurrentConnections);
+//     syslog(LOG_INFO, "Current statistics: wasted time: %lld ms. Total connected clients: %ld", statsTelnet.totalWastedTime, statsTelnet.totalConnects);
+// }
 
 void initializeStats(){
     statsTelnet.totalConnects = 0;
@@ -57,7 +56,6 @@ int main(int argc, char *argv[]) {
     port = atoi(argv[1]);
     delay = atoi(argv[2]);
     maxNoClients = atoi(argv[3]);
-    openlog("telnet_tarpit", LOG_PID | LOG_CONS, LOG_USER);
     initializeStats();
     setFdLimit(maxNoClients);
     signal(SIGPIPE, SIG_IGN); // Ignore 
@@ -65,7 +63,7 @@ int main(int argc, char *argv[]) {
     
     int serverSock = createServer(port);
     if (serverSock < 0) {
-        syslog(LOG_ERR, "Invalid server socket fd: %d", serverSock);
+        fprintf(stderr, "Invalid server socket fd: %d", serverSock);
         exit(EXIT_FAILURE);
     }
     
@@ -103,11 +101,10 @@ int main(int argc, char *argv[]) {
                         queue_append(&clientQueueTelnet, c);
                     } else {
                         long long timeTrapped = c->timeConnected;
-                        // syslog(LOG_INFO, "Client disconnected from IP: %s with fd: %d with time %lld", 
-                        //     c->ipaddr, c->fd, timeTrapped);
                         char msg[256];
-                        snprintf(msg, sizeof(msg), "%s disconnect %s  %lld",
+                        snprintf(msg, sizeof(msg), "%s disconnect %s  %lld\n",
                             SERVER_ID, c->ipaddr, timeTrapped);
+                        printf("%s", msg);
                         sendMetric(msg);
                         close(c->fd);
                         free(c);
@@ -127,7 +124,7 @@ int main(int argc, char *argv[]) {
         int pollResult = poll(&fds, 1, timeout);
         now = currentTimeMs(); // Poll will cause old value to be misrepresenting
         if (pollResult < 0) {
-            syslog(LOG_ERR, "Poll error with error %s", strerror(errno));
+            fprintf(stderr, "Poll error with error %s", strerror(errno));
             continue;
         }
 
@@ -135,14 +132,14 @@ int main(int argc, char *argv[]) {
         if (fds.revents & POLLIN) {
             int clientFd = accept(serverSock, (struct sockaddr *)&clientAddr, &addrLen);
             if(clientFd == -1) {
-                syslog(LOG_ERR, "Failed accepting new client with error %s", strerror(errno));
+                fprintf(stderr, "Failed accepting new client with error %s", strerror(errno));
                 continue;
             }
 
             fcntl(clientFd, F_SETFL, O_NONBLOCK); // Set non-blocking mode
             struct client* newClient = malloc(sizeof(struct client));
             if (!newClient) {
-                syslog(LOG_ERR, "Out of memory");
+                fprintf(stderr, "Out of memory");
                 close(clientFd);
                 continue;
             }
@@ -151,19 +148,21 @@ int main(int argc, char *argv[]) {
             newClient->fd = clientFd;
             newClient->sendNext = now + delay;
             newClient->timeConnected = 0;
-            strncpy(newClient->ipaddr, inet_ntoa(clientAddr.sin_addr), INET6_ADDRSTRLEN);
+            snprintf(newClient->ipaddr, INET_ADDRSTRLEN, "%s", inet_ntoa(clientAddr.sin_addr));
             queue_append(&clientQueueTelnet, newClient);
 
             if(statsTelnet.mostConcurrentConnections < clientQueueTelnet.length) {
                 statsTelnet.mostConcurrentConnections = clientQueueTelnet.length;
             }
 
-            syslog(LOG_INFO,"Accepted connection from %s\n",
-                inet_ntoa(clientAddr.sin_addr));
+            char msg[256];
+            snprintf(msg, sizeof(msg), "%s connected %s\n",
+                SERVER_ID, newClient->ipaddr);
+            printf("%s", msg);
+            sendMetric(msg);
         }
     }
 
-    closelog();
     close(serverSock);
     return 0;
 }

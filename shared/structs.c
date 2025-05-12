@@ -6,6 +6,7 @@
 #include <time.h>
 #include <sys/resource.h>
 #include <sys/un.h>
+#include <stdio.h>
 #include "structs.h"
 
 struct queue clientQueueTelnet;
@@ -101,7 +102,7 @@ void setFdLimit(int limit) {
     rl.rlim_cur = limit;
     rl.rlim_max = limit;
     if (setrlimit(RLIMIT_NOFILE, &rl) != 0) {
-        perror("setrlimit failed");
+        fprintf(stderr, "setrlimit failed"); 
     }
 }
 
@@ -112,8 +113,11 @@ void sendMetric(const char* message) {
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, "/tmp/tarpit_exporter.sock", sizeof(addr.sun_path)-1);
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", "/tmp/tarpit_exporter.sock");
 
-    sendto(sock, message, strlen(message), 0, (struct sockaddr*)&addr, sizeof(addr));
+    ssize_t sent = sendto(sock, message, strlen(message), 0, (struct sockaddr*)&addr, sizeof(addr));
+    if (sent < 0) {
+        fprintf(stderr, "sendto failed. Message was: %s", message);
+    }
     close(sock);
 }

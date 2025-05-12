@@ -6,7 +6,6 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <syslog.h>
 #include <poll.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -15,12 +14,8 @@
 #include <ifaddrs.h>
 #include "../shared/structs.h"
 
-// #define SSDP_PORT 1900
-// #define HTTP_PORT 49152
-// #define DELAY_MS 5000
 #define SSDP_MULTICAST "239.255.255.250"
-// #define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
-// #define FD_LIMIT 4096
+#define SERVER_ID "UPnP"
 
 int httpPort;
 int ssdpPort;
@@ -72,27 +67,11 @@ const char *FAKE_CHUNK =
     "        <SCPDURL>/hue_service.xml</SCPDURL>\n"
     "      </service>\n";
 
-void heartbeatLog() {
-    syslog(LOG_INFO, "Server is running with %d connected clients. Number of most concurrent connected clients is %d", clientQueueUpnp.length, statsUpnp.mostConcurrentConnections);
-    syslog(LOG_INFO, "Current statistics: wasted time: %lld ms. Total HTTP requests: %ld. Total other HTTP requests: %ld. SSDP responses: %ld. XML requests: %ld", 
-        statsUpnp.totalWastedTime, statsUpnp.totalHttpRequests, statsUpnp.otherHttpRequests, statsUpnp.ssdpResponses, statsUpnp.totalXmlRequests);
-}
-
-// char* getLocalIpAddress(){
-//     char hostbuffer[256];
-//     struct hostent *hostEntry;
-//     gethostname(hostbuffer, sizeof(hostbuffer));
-//     hostEntry = gethostbyname(hostbuffer);
-//     if(hostEntry == NULL){
-//         syslog(LOG_ERR, "Failed getting hostname");
-//         exit(EXIT_FAILURE);
-//     }
-//     char *ipAddress = inet_ntoa(*((struct in_addr*)
-//                         hostEntry->h_addr_list[0]));
-
-//     return ipAddress;
+// void heartbeatLog() {
+//     syslog(LOG_INFO, "Server is running with %d connected clients. Number of most concurrent connected clients is %d", clientQueueUpnp.length, statsUpnp.mostConcurrentConnections);
+//     syslog(LOG_INFO, "Current statistics: wasted time: %lld ms. Total HTTP requests: %ld. Total other HTTP requests: %ld. SSDP responses: %ld. XML requests: %ld", 
+//         statsUpnp.totalWastedTime, statsUpnp.totalHttpRequests, statsUpnp.otherHttpRequests, statsUpnp.ssdpResponses, statsUpnp.totalXmlRequests);
 // }
-
 
 char* getLocalIpAddress() {
     struct ifaddrs *ifaddr, *ifa;
@@ -109,7 +88,7 @@ char* getLocalIpAddress() {
             const char *ip = inet_ntoa(addr->sin_addr);
 
             if (strcmp(ifa->ifa_name, "lo") != 0) {
-                strncpy(ipAddress, ip, INET_ADDRSTRLEN);
+                snprintf(ipAddress, INET_ADDRSTRLEN, "%s", ip);
                 freeifaddrs(ifaddr);
                 return ipAddress;
             }
@@ -150,7 +129,7 @@ void *ssdpListener(void *arg) {
     // printf("response: %s\n", response);
 
     if ((sockFd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) { // works
-        syslog(LOG_ERR, "SSDP Socket creation failed");
+        fprintf(stderr, "SSDP Socket creation failed");
         exit(EXIT_FAILURE);
     }
 
@@ -167,36 +146,41 @@ void *ssdpListener(void *arg) {
     setsockopt(sockFd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
 
     if (bind(sockFd, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
-        syslog(LOG_ERR, "SSDP Bind failed");
+        fprintf(stderr, "SSDP Bind failed");
         close(sockFd);
         exit(EXIT_FAILURE);
     }
 
-    syslog(LOG_INFO, "UPnP listener started on port %d\n", ssdpPort);
+    printf("UPnP listener started on port %d\n", ssdpPort);
 
     while (1) {
         memset(buffer, 0, sizeof(buffer));
 
         if (recvfrom(sockFd, buffer, sizeof(buffer), 0,
                      (struct sockaddr *)&client_addr, &addrLen) <= 0) {
-            syslog(LOG_ERR, "Error receiving SSDP request");
+            fprintf(stderr, "Error receiving SSDP request");
             continue;
         }
 
-        // Ignore all requests that are not discovery
-        if (strstr(buffer, "M-SEARCH") != NULL) {
-            char client_ip[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
-            syslog(LOG_INFO, "Received SSDP M-SEARCH request from %s\n", client_ip);
+        char client_ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
+        
+        char msg[256];
+        int isMSearch = strstr(buffer, "M-SEARCH") != NULL;
 
+        if (isMSearch) {
             sendto(sockFd, response, strlen(response), 0,
                 (struct sockaddr *)&client_addr, sizeof(client_addr));
-
-            syslog(LOG_INFO, "Sent fake SSDP response to %s\n", client_ip);
-            statsUpnp.ssdpResponses += 1;
+            
+            snprintf(msg, sizeof(msg), "%s M-SEARCH %s\n", 
+                SERVER_ID, client_ip);
         } else {
-            syslog(LOG_INFO, "Received instead of M-SEARCH: %s", buffer);
+            snprintf(msg, sizeof(msg), "%s non-M-SEARCH %s\n", 
+                SERVER_ID, client_ip);
         }
+        
+        printf("%s", msg);
+        sendMetric(msg);
     }
 
     free(ssdpResponse);
@@ -210,7 +194,7 @@ void *httpServer(void *arg) {
     queue_init(&clientQueueUpnp);
     int serverSock = createServer(httpPort);
     if (serverSock < 0) {
-        syslog(LOG_ERR, "Invalid server socket fd: %d", serverSock);
+        fprintf(stderr, "Invalid server socket fd: %d", serverSock);
         exit(EXIT_FAILURE);
     }
 
@@ -252,8 +236,13 @@ void *httpServer(void *arg) {
                         queue_append(&clientQueueUpnp, c);
                     } else {
                         long long timeTrapped = c->timeConnected;
-                        syslog(LOG_INFO, "Client disconnected from IP: %s with fd: %d with time %lld",
-                            c->ipaddr, c->fd, timeTrapped);
+
+                        char msg[256];
+                        snprintf(msg, sizeof(msg), "%s disconnect %s  %lld\n",
+                            SERVER_ID, c->ipaddr, timeTrapped);
+                        printf("%s", msg);
+                        sendMetric(msg);
+
                         close(c->fd);
                         free(c);
                     }
@@ -272,7 +261,7 @@ void *httpServer(void *arg) {
         int pollResult = poll(&fds, 1, timeout);
         now = currentTimeMs(); // Poll will cause old value to be misrepresenting
         if (pollResult < 0) {
-            syslog(LOG_ERR, "Poll error with error %s", strerror(errno));
+            fprintf(stderr, "Poll error with error %s", strerror(errno));
             continue;
         }
 
@@ -280,14 +269,14 @@ void *httpServer(void *arg) {
         if (fds.revents & POLLIN) {
             int clientFd = accept(serverSock, (struct sockaddr *)&clientAddr, &addrLen);
             if(clientFd == -1) {
-                syslog(LOG_ERR, "Failed accepting new client with error %s", strerror(errno));
+                fprintf(stderr, "Failed accepting new client with error %s", strerror(errno));
                 continue;
             }
             statsUpnp.totalHttpRequests += 1;
             fcntl(clientFd, F_SETFL, O_NONBLOCK); // Set non-blocking mode
             struct client* newClient = malloc(sizeof(struct client));
             if (newClient == NULL) {
-                syslog(LOG_ERR, "Out of memory");
+                fprintf(stderr, "Out of memory");
                 close(clientFd);
                 continue;
             }
@@ -295,11 +284,11 @@ void *httpServer(void *arg) {
             char buffer[1024];
             memset(buffer, 0, 1024);
             read(clientFd, buffer, 1024-1);
-            char method[20], url[256];
+            char method[20], url[128];
             sscanf(buffer, "%19s %255s", method, url);
 
             if (strcmp(url, "/hue-device.xml") == 0 && strcmp(method, "GET") == 0) {
-                statsUpnp.totalXmlRequests += 1;
+                // statsUpnp.totalXmlRequests += 1;
                 char responseHeader[] =
                     "HTTP/1.1 200 OK\r\n"
                     "Transfer-Encoding: chunked\r\n"
@@ -308,7 +297,7 @@ void *httpServer(void *arg) {
                 
                 ssize_t out = write(clientFd, responseHeader, strlen(responseHeader));
                 if(out <= 0){
-                    syslog(LOG_ERR, "failed to write response header to %s\n", 
+                    fprintf(stderr, "failed to write response header to %s\n", 
                         inet_ntoa(clientAddr.sin_addr));
                     close(clientFd);
                     free(newClient);
@@ -331,14 +320,24 @@ void *httpServer(void *arg) {
                     statsUpnp.mostConcurrentConnections = clientQueueUpnp.length;
                 }
 
-                syslog(LOG_INFO,"Accepted GET request from from %s\n",
-                    inet_ntoa(clientAddr.sin_addr));
+                char msg[256];
+                snprintf(msg, sizeof(msg), "%s accept %s\n",
+                    SERVER_ID, newClient->ipaddr);
+                printf("%s", msg);
+                sendMetric(msg);
             // Ignore requests without a method or url
             // } else if (strcmp(method, "") == 0 || strcmp(url, "")) {
             //     continue;
             } else {
-                statsUpnp.otherHttpRequests += 1;
-                syslog(LOG_INFO, "Received %s request with %s url from %s. Disconnecting client...", method, url, inet_ntoa(clientAddr.sin_addr));
+                // prometheus handles stats
+                // statsUpnp.otherHttpRequests += 1;
+
+                char msg[256];
+                snprintf(msg, sizeof(msg), "%s otherHttpRequest %s %s %s\n",
+                    SERVER_ID, method, url, inet_ntoa(clientAddr.sin_addr));
+                printf("%s", msg);
+                sendMetric(msg);
+
                 close(clientFd);
                 free(newClient);
                 continue;
@@ -346,7 +345,6 @@ void *httpServer(void *arg) {
         }
     }
 
-    closelog();
     close(serverSock);
     return NULL;
 }
@@ -366,7 +364,7 @@ int main(int argc, char* argv[]) {
     ssdpPort = atoi(argv[2]);
     delay = atoi(argv[3]);
     maxNoClients = atoi(argv[4]);
-    openlog("upnp_tarpit", LOG_PID | LOG_CONS, LOG_USER);
+    // openlog("upnp_tarpit", LOG_PID | LOG_CONS, LOG_USER);
     initializeStats();
     setFdLimit(maxNoClients);
     pthread_t ssdpThread, httpThread;

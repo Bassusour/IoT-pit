@@ -12,12 +12,12 @@ struct client {
     long long sendNext;
     struct client *next;
     long long timeConnected;
-    char ipaddr[INET6_ADDRSTRLEN];
+    char ipaddr[INET_ADDRSTRLEN];
 };
 
 struct mqttClient {
     int fd;
-    char ipaddr[INET6_ADDRSTRLEN];
+    char ipaddr[INET_ADDRSTRLEN];
     uint8_t buffer[1024];
     uint16_t bytesWrittenToBuffer;
     uint16_t keepAlive;
