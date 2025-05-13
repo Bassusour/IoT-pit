@@ -67,7 +67,7 @@ services:
   endlessh:
     build:
       context: ./endlessh
-      dockerfile: Dockerfile
+      # dockerfile: Dockerfile
     container_name: endlessh
     ports:
       - "2222:2222"
