@@ -11,6 +11,7 @@
 
 struct queue clientQueueTelnet;
 struct queue clientQueueUpnp;
+struct queue clientQueueCoap;
 struct telnetStatistics statsTelnet;
 struct upnpStatistics statsUpnp;
 struct mqttStatistics statsMqtt;
@@ -20,7 +21,7 @@ void queue_init(struct queue *q) {
     q->length = 0;
 }
 
-void queue_append(struct queue *q, struct client *c) {
+void queue_append(struct queue *q, struct baseClient *c) {
     c->next = NULL;
     if (q->tail != NULL) {
         q->tail->next = c;
@@ -31,9 +32,9 @@ void queue_append(struct queue *q, struct client *c) {
     q->length++;
 }
 
-struct client *queue_pop(struct queue *q) {
+struct baseClient *queue_pop(struct queue *q) {
     if (q->head == NULL) return NULL;
-    struct client *c = q->head;
+    struct baseClient *c = q->head;
     q->head = c->next;
     if (!q->head) {
         q->tail = NULL;

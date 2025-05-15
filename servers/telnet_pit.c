@@ -95,32 +95,33 @@ int main(int argc, char *argv[]) {
         // Process clients in queue
         while (clientQueueTelnet.head) {
             if(clientQueueTelnet.head->sendNext <= now){
-                struct client *c = queue_pop(&clientQueueTelnet);
+                struct baseClient *bc = queue_pop(&clientQueueTelnet);
+                struct telnetAndUpnpClient *c = (struct telnetAndUpnpClient *)bc;
                 
                 int optionIndex = rand() % num_options;
                 ssize_t out = write(c->fd, negotiations[optionIndex], sizeof(negotiations[optionIndex]));
                 
                 if (out == -1) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) { // Avoid blocking
-                        c->sendNext = now + delay;
-                        c->timeConnected += delay;
+                        c->base.sendNext = now + delay;
+                        c->base.timeConnected += delay;
                         statsTelnet.totalWastedTime += delay;
-                        queue_append(&clientQueueTelnet, c);
+                        queue_append(&clientQueueTelnet, (struct baseClient *)c);
                     } else {
-                        long long timeTrapped = c->timeConnected;
+                        long long timeTrapped = c->base.timeConnected;
                         char msg[256];
                         snprintf(msg, sizeof(msg), "%s disconnect %s  %lld\n",
-                            SERVER_ID, c->ipaddr, timeTrapped);
+                            SERVER_ID, c->base.ipaddr, timeTrapped);
                         printf("%s", msg);
                         sendMetric(msg);
                         close(c->fd);
                         free(c);
                     }
                 } else {
-                    c->sendNext = now + delay;
-                    c->timeConnected += delay;
+                    c->base.sendNext = now + delay;
+                    c->base.timeConnected += delay;
                     statsTelnet.totalWastedTime += delay;
-                    queue_append(&clientQueueTelnet, c);
+                    queue_append(&clientQueueTelnet, (struct baseClient *)c);
                 }
             } else {
                 timeout = clientQueueTelnet.head->sendNext - now;
@@ -144,7 +145,7 @@ int main(int argc, char *argv[]) {
             }
 
             fcntl(clientFd, F_SETFL, O_NONBLOCK); // Set non-blocking mode
-            struct client* newClient = malloc(sizeof(struct client));
+            struct telnetAndUpnpClient* newClient = malloc(sizeof(struct telnetAndUpnpClient));
             if (!newClient) {
                 fprintf(stderr, "Out of memory");
                 close(clientFd);
@@ -153,10 +154,10 @@ int main(int argc, char *argv[]) {
 
             statsTelnet.totalConnects += 1;
             newClient->fd = clientFd;
-            newClient->sendNext = now + delay;
-            newClient->timeConnected = 0;
-            snprintf(newClient->ipaddr, INET_ADDRSTRLEN, "%s", inet_ntoa(clientAddr.sin_addr));
-            queue_append(&clientQueueTelnet, newClient);
+            newClient->base.sendNext = now + delay;
+            newClient->base.timeConnected = 0;
+            snprintf(newClient->base.ipaddr, INET_ADDRSTRLEN, "%s", inet_ntoa(clientAddr.sin_addr));
+            queue_append(&clientQueueTelnet, (struct baseClient*)newClient);
 
             if(statsTelnet.mostConcurrentConnections < clientQueueTelnet.length) {
                 statsTelnet.mostConcurrentConnections = clientQueueTelnet.length;
@@ -164,7 +165,7 @@ int main(int argc, char *argv[]) {
 
             char msg[256];
             snprintf(msg, sizeof(msg), "%s connect %s\n",
-                SERVER_ID, newClient->ipaddr);
+                SERVER_ID, newClient->base.ipaddr);
             printf("%s", msg);
             sendMetric(msg);
         }

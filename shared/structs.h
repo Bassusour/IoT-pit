@@ -2,17 +2,29 @@
 #define STRUCTS_H
 
 #include <netinet/in.h>
+#include <stdbool.h>
 #include "uthash.h"
 
 enum Request { CONNECT, PING, SUBSCRIBE, PUBREC, DISCONNECT, PUBLISH, UNSUBSCRIBE, PUBCOMP, UNSUPPORTED_REQUEST };
 enum MqttVersion { V5, V311, V31 };
+enum ClientType { TELNET_CLIENT, COAP_CLIENT };
 
-struct client {
-    int fd;
+struct baseClient {
+    enum ClientType type;
     long long sendNext;
-    struct client *next;
+    struct baseClient *next;
     long long timeConnected;
     char ipaddr[INET_ADDRSTRLEN];
+};
+
+struct telnetAndUpnpClient {
+    struct baseClient base;
+    int fd;
+};
+
+struct coapClient {
+    struct baseClient base;
+    bool receivedAck;
 };
 
 struct mqttClient {
@@ -29,13 +41,14 @@ struct mqttClient {
 };
 
 struct queue {
-    struct client *head;
-    struct client *tail;
+    struct baseClient *head;
+    struct baseClient *tail;
     int length;
 };
 
 extern struct queue clientQueueTelnet;
 extern struct queue clientQueueUpnp;
+extern struct queue clientQueueCoap;
 
 struct telnetStatistics {
     unsigned long totalConnects;
@@ -73,14 +86,14 @@ void queue_init(struct queue *q);
  * @param q Pointer to the queue.
  * @param c Pointer to the client to append.
  */
-void queue_append(struct queue *q, struct client *c);
+void queue_append(struct queue *q, struct baseClient *c);
 
 /**
  * @brief Removes and returns the first client from the queue.
  * @param q Pointer to the queue.
  * @return Pointer to the removed client or NULL if the queue is empty.
  */
-struct client *queue_pop(struct queue *q);
+struct baseClient *queue_pop(struct queue *q);
 
 /**
  * @brief Creates a standard TCP server with very large backlog

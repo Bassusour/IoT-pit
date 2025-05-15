@@ -220,7 +220,8 @@ void *httpServer(void *arg) {
 
         while (clientQueueUpnp.head) {
             if(clientQueueUpnp.head->sendNext <= now){
-                struct client *c = queue_pop(&clientQueueUpnp);
+                struct baseClient *bc = queue_pop(&clientQueueUpnp);
+                struct telnetAndUpnpClient *c = (struct telnetAndUpnpClient *)bc;
 
                 char chunk_size[10];
                 snprintf(chunk_size, sizeof(chunk_size), "%X\r\n", (int)strlen(FAKE_CHUNK));
@@ -230,16 +231,16 @@ void *httpServer(void *arg) {
                 
                 if (out == -1) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) { // Avoid blocking
-                        c->sendNext = now + delay;
-                        c->timeConnected += delay;
+                        c->base.sendNext = now + delay;
+                        c->base.timeConnected += delay;
                         statsUpnp.totalWastedTime += delay;
-                        queue_append(&clientQueueUpnp, c);
+                        queue_append(&clientQueueUpnp, (struct baseClient *)c);
                     } else {
-                        long long timeTrapped = c->timeConnected;
+                        long long timeTrapped = c->base.timeConnected;
 
                         char msg[256];
                         snprintf(msg, sizeof(msg), "%s disconnect %s  %lld\n",
-                            SERVER_ID, c->ipaddr, timeTrapped);
+                            SERVER_ID, c->base.ipaddr, timeTrapped);
                         printf("%s", msg);
                         sendMetric(msg);
 
@@ -247,10 +248,10 @@ void *httpServer(void *arg) {
                         free(c);
                     }
                 } else {
-                    c->sendNext = now + delay;
-                    c->timeConnected += delay;
+                    c->base.sendNext = now + delay;
+                    c->base.timeConnected += delay;
                     statsUpnp.totalWastedTime += delay;
-                    queue_append(&clientQueueUpnp, c);
+                    queue_append(&clientQueueUpnp, (struct baseClient *)c);
                 }
             } else {
                 timeout = clientQueueUpnp.head->sendNext - now;
@@ -274,7 +275,7 @@ void *httpServer(void *arg) {
             }
             statsUpnp.totalHttpRequests += 1;
             fcntl(clientFd, F_SETFL, O_NONBLOCK); // Set non-blocking mode
-            struct client* newClient = malloc(sizeof(struct client));
+            struct telnetAndUpnpClient* newClient = malloc(sizeof(struct telnetAndUpnpClient));
             if (newClient == NULL) {
                 fprintf(stderr, "Out of memory");
                 close(clientFd);
@@ -311,10 +312,10 @@ void *httpServer(void *arg) {
                 write(clientFd, "\r\n", 2);
 
                 newClient->fd = clientFd;
-                newClient->sendNext = now + delay;
-                newClient->timeConnected = 0;
-                snprintf(newClient->ipaddr, sizeof(newClient->ipaddr), "%s", inet_ntoa(clientAddr.sin_addr));
-                queue_append(&clientQueueUpnp, newClient);
+                newClient->base.sendNext = now + delay;
+                newClient->base.timeConnected = 0;
+                snprintf(newClient->base.ipaddr, sizeof(newClient->base.ipaddr), "%s", inet_ntoa(clientAddr.sin_addr));
+                queue_append(&clientQueueUpnp, (struct baseClient*)newClient);
 
                 if(statsUpnp.mostConcurrentConnections < clientQueueUpnp.length) {
                     statsUpnp.mostConcurrentConnections = clientQueueUpnp.length;
@@ -322,7 +323,7 @@ void *httpServer(void *arg) {
 
                 char msg[256];
                 snprintf(msg, sizeof(msg), "%s connect %s\n",
-                    SERVER_ID, newClient->ipaddr);
+                    SERVER_ID, newClient->base.ipaddr);
                 printf("%s", msg);
                 sendMetric(msg);
             // Ignore requests without a method or url
