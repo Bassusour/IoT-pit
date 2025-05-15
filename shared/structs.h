@@ -25,6 +25,7 @@ struct telnetAndUpnpClient {
 struct coapClient {
     struct baseClient base;
     bool receivedAck;
+    int numberOfUnacknowledgedCons;
 };
 
 struct mqttClient {
