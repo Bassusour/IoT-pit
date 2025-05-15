@@ -13,10 +13,6 @@
 #include <time.h>
 #include "../shared/structs.h"
 
-// CoAP constants
-// #define COAP_TYPE_CON 0x00
-// #define COAP_TYPE_NON 0x10
-// #define COAP_CODE_GET 0x01
 #define CLASS_REQUEST 0x0
 #define DETAIL_GET 0x1
 #define DETAIL_POST 0x2
@@ -26,56 +22,67 @@
 #define TYPE_NON_CONFIRMABLE 0x1
 #define TYPE_ACK 0x2
 #define TYPE_RST 0x3
-#define CODE_CONTENT 0x45 // 2.05 in CoAP (binary: 010 0001 = 0x45)
 #define MAX_BUF_LEN 1024
 #define SERVER_ID "CoAP"
 
 int port = 5683;
 int timeout = -1;
-int delay = 5000;
-int numberOfAllowedUnacknowledgedCons = 3;
+int delay = 1000;
+int ACK_TIMEOUT = 2000;
+int sockFd;
 
-void build_coap_block_response(char *response, int *resp_len, uint16_t msg_id, uint8_t token, int block_num) {
+int buildCoapBlockResponse(uint16_t messageId, uint8_t* token, uint8_t tkl, int blockNumber, struct sockaddr_in addr, socklen_t addrLen) {
+    // TODO: Make it so block_num can't exceed 20 bits (1048575)
+    // Block2 Option (delta = 23, length = 1)
+    // NUM(20 bits) | (M=1) | SZX=2(64 bytes)
+    uint32_t block_opt_value = (blockNumber << 4) | (0b1 << 3) | 0x02;
+    uint8_t block_len = (block_opt_value <= 0xFF) ? 1 :
+                        (block_opt_value <= 0xFFFF) ? 2 : 3;
+    
+    int payloadLength = 32;
+    int responseLength = 4 + tkl + block_len + payloadLength;
+    char response[responseLength];
+    
     // Version (1) | Type (CON) | TKL (1)
     response[0] = (0b01 << 6) | (0b0 << 4) | 0b1;
     // class (2) | detail (5). Content response
     response[1] = (0b010 << 5) | (0b101);
-    // TODO: Make random. Just increment from an initial value. 
-    response[2] = (msg_id >> 8) & 0xFF;
-    response[3] = msg_id & 0xFF;
+    response[2] = (messageId >> 8) & 0xFF;
+    response[3] = messageId & 0xFF;
 
-    // Token (1 byte)
-    response[4] = token;
+    int index = 4;
 
-    int opt_index = 5;
-
-    // TODO: Make it so block_num can't exceed 20 bits (1048575)
-    // Block2 Option (delta = 23, length = 1)
-    // NUM(20 bits) | (M=1) | SZX=2(64 bytes)
-    uint32_t block_opt_value = (block_num << 4) | (0b1 << 3) | 0x02;
-
-    uint8_t block_len = (block_opt_value <= 0xFF) ? 1 :
-                        (block_opt_value <= 0xFFFF) ? 2 : 3;
-
-    // Option Delta 13 | Length = 1
-    response[opt_index++] = (0b1101 << 4) | block_len;
-    response[opt_index++] = block_opt_value;
-
-    // Payload marker
-    response[opt_index++] = 0xFF;
-
-    // Payload
-    for (int i = 0; i < 100; i++) {
-        response[opt_index + i] = 'A';
+    // Token
+    for (int i = 0; i < tkl; i++) {
+        response[index++] = token[i];
     }
 
-    *resp_len = opt_index + 100;
+    // Option Delta 13 | Length = 1
+    response[index++] = (0b1101 << 4) | block_len;
+    if (block_len == 1) {
+        response[++index] = block_opt_value & 0xFF;
+    } else if (block_len == 2) {
+        response[++index] = (block_opt_value >> 8) & 0xFF;
+        response[++index] = block_opt_value & 0xFF;
+    } else {
+        response[++index] = (block_opt_value >> 16) & 0xFF;
+        response[++index] = (block_opt_value >> 8) & 0xFF;
+        response[++index] = block_opt_value & 0xFF;
+    }
+
+    // Payload marker
+    response[index++] = 0xFF;
+
+    // Payload
+    for (int i = 0; i < payloadLength; i++) {
+        response[index + i] = 'A';
+    }
+
+    return sendto(sockFd, response, responseLength, 0, (struct sockaddr *)&addr, addrLen);
 }
 
 int main(int argc, char* argv[]) {
-    int sockFd;
-    struct sockaddr_in serverAddr, clientAddr;
-    socklen_t addrLen = sizeof(clientAddr);
+    struct sockaddr_in serverAddr;
 
     if ((sockFd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
         fprintf(stderr, "SSDP Socket creation failed");
@@ -119,30 +126,30 @@ int main(int argc, char* argv[]) {
                 // If not, skip (re-add to queue). 
                 // If after x amount of tries/x amount of time, consider the client disconnected
                 if(!c->receivedAck) {
-                    if(c->numberOfUnacknowledgedCons <= numberOfAllowedUnacknowledgedCons) {
-                        c->base.sendNext = now + delay;
+                    if(c->retransmits < 5) {
+                        c->base.sendNext = now + (ACK_TIMEOUT << (c->retransmits));;
+                        c->retransmits += 1;
                         c->base.timeConnected += delay;
-                        statsTelnet.totalWastedTime += delay;
+                        buildCoapBlockResponse(c->messageId, c->token, c->tkl, c->blockNumber, c->clientAddr, c->addrLen);
                         queue_append(&clientQueueCoap, (struct baseClient *)c);
                     } else {
                         // Disconnect client
                     }
-
                 }
 
+                uint16_t messageId = 1234; // TODO: automatically generate
+                c->messageId = messageId;
+
                 // Write a block
-                // int out = build_coap_block_response()
-                
-                int out = 1;
+                int out = buildCoapBlockResponse(messageId, c->token, c->tkl, c->blockNumber, c->clientAddr, c->addrLen);
                 
                 if (out == -1) {
-                    long long timeTrapped = c->timeConnected;
+                    long long timeTrapped = c->base.timeConnected;
                     char msg[256];
                     snprintf(msg, sizeof(msg), "%s disconnect %s  %lld\n",
-                        SERVER_ID, c->ipaddr, timeTrapped);
+                        SERVER_ID, c->base.ipaddr, timeTrapped);
                     printf("%s", msg);
                     sendMetric(msg);
-                    close(c->fd);
                     free(c);
                 } else {
                     c->base.sendNext = now + delay;
@@ -157,6 +164,10 @@ int main(int argc, char* argv[]) {
 
         int pollResult = poll(&pollFd, 1, timeout);
         now = currentTimeMs();
+        if (pollResult < 0) {
+            fprintf(stderr, "Poll error with error %s", strerror(errno));
+            continue;
+        }
 
         if (pollFd.revents & POLLIN) {
             struct sockaddr_in clientAddr;
@@ -199,8 +210,8 @@ int main(int argc, char* argv[]) {
                 memcpy(token, &buffer[4], tkl);
             }
 
-
             // TODO: Ignore extended methods (send "method not allowed" response)
+            // TODO: Handle requests while the client is still receiving blocks. 
 
             if (class == CLASS_REQUEST && detail == DETAIL_GET) {
                 // TODO: If a CON (Confirmable) request, first send seperate CON response. 
@@ -208,20 +219,24 @@ int main(int argc, char* argv[]) {
                 // Wait just before the backoff time (maybe). 
 
                 printf("GET request from %s\n", inet_ntoa(clientAddr.sin_addr));
-                struct client* newClient = malloc(sizeof(struct client));
+                struct coapClient* newClient = malloc(sizeof(struct coapClient));
                 if (!newClient) {
                     fprintf(stderr, "Out of memory");
                     continue;
                 }
 
-                newClient->sendNext = now + delay;
-                newClient->timeConnected = 0;
-                snprintf(newClient->ipaddr, INET_ADDRSTRLEN, "%s", inet_ntoa(clientAddr.sin_addr));
+                newClient->base.sendNext = now + delay;
+                newClient->base.timeConnected = 0;
+                newClient->blockNumber = 0;
+                newClient->tkl = tkl;
+                newClient->retransmits = 0;
+                memcpy(newClient->token, token, 8);
+                snprintf(newClient->base.ipaddr, INET_ADDRSTRLEN, "%s", inet_ntoa(clientAddr.sin_addr));
                 queue_append(&clientQueueCoap, (struct baseClient*)newClient);
     
                 char msg[256];
                 snprintf(msg, sizeof(msg), "%s connect %s\n",
-                    SERVER_ID, newClient->ipaddr);
+                    SERVER_ID, newClient->base.ipaddr);
                 printf("%s", msg);
                 sendMetric(msg);
             } else {

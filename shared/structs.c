@@ -21,6 +21,7 @@ void queue_init(struct queue *q) {
     q->length = 0;
 }
 
+// TODO: Priority queue for coap
 void queue_append(struct queue *q, struct baseClient *c) {
     c->next = NULL;
     if (q->tail != NULL) {
