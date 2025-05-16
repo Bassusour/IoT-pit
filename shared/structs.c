@@ -44,6 +44,19 @@ struct baseClient *queue_pop(struct queue *q) {
     return c;
 }
 
+struct coapClient* findExistingClient(struct queue *q, struct sockaddr_in *addr) {
+    struct baseClient *current = q->head;
+    while (current != NULL) {
+        struct coapClient *coap = (struct coapClient *)current;
+        if (coap->clientAddr.sin_addr.s_addr == addr->sin_addr.s_addr &&
+            coap->clientAddr.sin_port == addr->sin_port) {
+            return coap;
+        }
+        current = current->next;
+    }
+    return NULL;
+}
+
 int createServer(int port) {
     int r; 
     int sockfd;

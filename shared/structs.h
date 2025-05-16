@@ -103,6 +103,13 @@ void queue_append(struct queue *q, struct baseClient *c);
 struct baseClient *queue_pop(struct queue *q);
 
 /**
+ * @brief finds existing coapClient in specified queue
+ * @param q Pointer to the queue
+ * @param addr Pointer to the addr
+ */
+struct coapClient* findExistingClient(struct queue *q, struct sockaddr_in *addr);
+
+/**
  * @brief Creates a standard TCP server with very large backlog
  * @param port What port the server should be assigned
  * @return File descriptor for the server
