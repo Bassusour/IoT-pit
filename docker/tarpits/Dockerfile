@@ -5,7 +5,7 @@ COPY servers/ ./servers/
 COPY shared/ ./shared/
 COPY makefile .
 
-RUN make telnet_pit upnp_pit mqtt_pit
+RUN make telnet_pit upnp_pit mqtt_pit coap_pit
 
 # Final image
 FROM debian:bookworm-slim

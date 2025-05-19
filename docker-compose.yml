@@ -16,7 +16,6 @@ services:
     build:
       context: .
       dockerfile: ./docker/tarpits/Dockerfile
-    # container_name: ${TELNET_CONTAINER_NAME}
     ports:
       - ${TELNET_PORT}:${TELNET_PORT}
     volumes:
@@ -33,7 +32,6 @@ services:
     build:
       context: .
       dockerfile: ./docker/tarpits/Dockerfile
-    # container_name: ${UPNP_CONTAINER_NAME}
     ports:
       - ${UPNP_SSDP_PORT}:${UPNP_SSDP_PORT}
       - ${UPNP_HTTP_PORT}:${UPNP_HTTP_PORT}
@@ -51,7 +49,6 @@ services:
     build:
       context: .
       dockerfile: ./docker/tarpits/Dockerfile
-    # container_name: ${MQTT_CONTAINER_NAME}
     ports:
       - ${MQTT_PORT}:${MQTT_PORT}
     volumes:
@@ -61,6 +58,19 @@ services:
         soft: "${MQTT_MAX_NO_CLIENTS}"
         hard: "${MQTT_MAX_NO_CLIENTS}"
     command: ["start", "mqtt", "${MQTT_PORT}", "${MQTT_MAX_EVENTS}", "${MQTT_EPOLL_TIMEOUT_INTERVAL_MS}", "${MQTT_PUBREL_INTERVAL_MS}", "${MQTT_MAX_PACKETS_PER_CLIENTS}", "${MQTT_MAX_NO_CLIENTS}"]
+    depends_on:
+      - prometheus-exporter
+
+  coap_pit:
+    build:
+      context: .
+      dockerfile: ./docker/tarpits/Dockerfile
+    ports:
+      - ${UPNP_SSDP_PORT}:${UPNP_SSDP_PORT}
+    volumes:
+      - tarpit-sock:/tmp  # Share socket with prometheus-exporter
+    ulimits:
+    command: ["start", "coap", "${COAP_PORT}", "${COAP_DELAY_MS}", "${COAP_ACK_TIMEOUT_MS}", "${COAP_MAX_RETRANSMIT}"]
     depends_on:
       - prometheus-exporter
 

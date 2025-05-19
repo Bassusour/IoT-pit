@@ -25,8 +25,10 @@ struct telnetAndUpnpClient {
 struct coapClient {
     struct baseClient base;
     bool receivedAck;
+    bool receivedRst;
+    bool receivedGet;
     int retransmits;
-    int blockNumber;
+    uint32_t blockNumber;
     uint16_t messageId;
     uint8_t token[8];
     uint8_t tkl;

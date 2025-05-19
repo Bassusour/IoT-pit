@@ -32,11 +32,13 @@ int ACK_TIMEOUT = 2000;
 int MAX_RETRANSMIT = 4;
 int sockFd;
 
-int buildCoapBlockResponse(uint16_t messageId, uint8_t* token, uint8_t tkl, int blockNumber, struct sockaddr_in addr, socklen_t addrLen, struct coapClient* client) {
-    // TODO: Make it so block_num can't exceed 20 bits (1048575)
+int sendCoapBlockResponse(uint16_t messageId, uint8_t* token, uint8_t tkl, uint32_t* blockNumber, struct sockaddr_in* addr, socklen_t addrLen) {
+    if(*blockNumber > 0xFFFFF) {
+        *blockNumber = 0;
+    }
     // Block2 Option (delta = 23, length = 1)
     // NUM(20 bits) | (M=1) | SZX=2(64 bytes)
-    uint32_t block_opt_value = (blockNumber << 4) | (0b1 << 3) | 0x02;
+    uint32_t block_opt_value = (*blockNumber << 4) | (0b1 << 3) | 0x02;
     uint8_t block_len = (block_opt_value <= 0xFF) ? 1 :
                         (block_opt_value <= 0xFFFF) ? 2 : 3;
     
@@ -66,7 +68,7 @@ int buildCoapBlockResponse(uint16_t messageId, uint8_t* token, uint8_t tkl, int 
 
     // Option Delta 13 | block length
     response[index++] = (0b1101 << 4) | block_len;
-    response[index++] = 23 - 13;  // Extended delta = 10 TODO
+    response[index++] = 23 - 13;  // Block2 option (rfc7959 sect. 6)
     if (block_len == 1) {
         response[index++] = block_opt_value & 0xFF;
     } else if (block_len == 2) {
@@ -86,10 +88,25 @@ int buildCoapBlockResponse(uint16_t messageId, uint8_t* token, uint8_t tkl, int 
         response[index++] = 'A';
     }
 
-    return sendto(sockFd, response, index, 0, (struct sockaddr *)&client->clientAddr, client->addrLen);
+    return sendto(sockFd, response, index, 0, (struct sockaddr *)addr, addrLen);
+}
+
+int sendPing(uint16_t messageId, struct sockaddr_in* addr, socklen_t addrLen) {
+    uint8_t ping[4];
+    ping[0] = (1 << 6) | (0 << 4) | 0;      // Version=1, Type=CON, TKL=0
+    ping[1] = 0x00;                         // Code = 0.00 (Empty)
+    ping[2] = (messageId >> 8) & 0xFF;      // Message ID MSB
+    ping[3] = messageId & 0xFF;             // Message ID LSB
+
+    return sendto(sockFd, ping, sizeof(ping), 0, (struct sockaddr *)addr, addrLen);
 }
 
 int main(int argc, char* argv[]) {
+    (void)argc;
+    port = atoi(argv[1]);
+    delay = atoi(argv[2]);
+    ACK_TIMEOUT = atoi(argv[3]);
+    MAX_RETRANSMIT = atoi(argv[4]);
     struct sockaddr_in serverAddr;
 
     if ((sockFd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
@@ -130,55 +147,53 @@ int main(int argc, char* argv[]) {
                 struct baseClient *bc = queue_pop(&clientQueueCoap);
                 struct coapClient *c = (struct coapClient *)bc;
                 
-                if(!c->receivedAck) {
+                // Handle retransmits
+                if(!c->receivedAck || !c->receivedRst) {
                     if(c->retransmits < MAX_RETRANSMIT) {
                         c->base.sendNext = now + (ACK_TIMEOUT << (c->retransmits));
+                        c->base.timeConnected += (ACK_TIMEOUT << (c->retransmits));
                         c->retransmits += 1;
-                        c->base.timeConnected += delay;
-                        int out = buildCoapBlockResponse(c->messageId, c->token, c->tkl, c->blockNumber, c->clientAddr, c->addrLen, c);
-                        printf("Token contents: ");
-                        for (int i = 0; i < 8; i++) {
-                            printf("%u ", c->token[i]);
+
+                        if(!c->receivedAck) {
+                            sendCoapBlockResponse(c->messageId, c->token, c->tkl, &c->blockNumber, &c->clientAddr, c->addrLen);
+                        } else {
+                            sendPing(c->messageId, &c->clientAddr, c->addrLen);
                         }
-                        printf("\n");
-                        printf("Sent block2 due to not receiving an ACK with out=%d messageId=%u tkl=%d blockNumber=%d\n", out, c->messageId, c->tkl, c->blockNumber);
+
+                        // printf("Token contents: ");
+                        // for (int i = 0; i < 8; i++) {
+                        //     printf("%u ", c->token[i]);
+                        // }
+                        // printf("\n");
+                        // printf("Sent block2 due to not receiving an ACK with out=%d messageId=%u tkl=%d blockNumber=%d\n", out, c->messageId, c->tkl, c->blockNumber);
                         queue_append(&clientQueueCoap, (struct baseClient *)c);
+                        continue;
                     } else {
                         // Disconnect client
-                        long long timeTrapped = c->base.timeConnected; // TODO: Calculate correctly
+                        long long timeTrapped = c->base.timeConnected - (ACK_TIMEOUT * ((0b1 << MAX_RETRANSMIT) - 1));
                         char msg[256];
                         snprintf(msg, sizeof(msg), "%s disconnect %s  %lld\n",
                             SERVER_ID, c->base.ipaddr, timeTrapped);
                         printf("%s", msg);
                         // sendMetric(msg);
                         free(c);
+                        continue;
                     }
-                    continue;
-                }
-
-                // Write a block
-                int out = buildCoapBlockResponse(c->messageId, c->token, c->tkl, c->blockNumber, c->clientAddr, c->addrLen, c);
-                printf("Token contents: ");
-                for (int i = 0; i < 8; i++) {
-                    printf("%u ", c->token[i]);
-                }
-                printf("\n");
-                printf("Sent block2 with out=%d messageId=%u tkl=%d blockNumber=%d\n", out, c->messageId, c->tkl, c->blockNumber);
-
-                if (out == -1) {
-                    long long timeTrapped = c->base.timeConnected;
-                    char msg[256];
-                    snprintf(msg, sizeof(msg), "%s disconnect %s  %lld\n",
-                        SERVER_ID, c->base.ipaddr, timeTrapped);
-                    printf("%s", msg);
-                    sendMetric(msg);
-                    free(c);
-                } else {
-                    c->base.sendNext = now + delay;
-                    c->base.timeConnected += delay;
+                } 
+                
+                if (c->receivedGet) {
+                    sendCoapBlockResponse(c->messageId, c->token, c->tkl, &c->blockNumber, &c->clientAddr, c->addrLen);
+                    c->blockNumber += 1;
                     c->receivedAck = false;
-                    queue_append(&clientQueueCoap, (struct baseClient *)c);
-                }
+                } else if (c->receivedRst) {
+                    sendPing(c->messageId, &c->clientAddr, c->addrLen);
+                    c->receivedRst = false;
+                } 
+                
+                c->base.timeConnected += delay;
+                c->messageId += 1;
+                c->base.sendNext = now + delay;
+                queue_append(&clientQueueCoap, (struct baseClient *)c);
             } else {
                 timeout = clientQueueCoap.head->sendNext - now;
                 break;
@@ -253,61 +268,60 @@ int main(int argc, char* argv[]) {
                 memcpy(token, &buffer[4], tkl);
             }
 
+            char msg[256];
+            snprintf(msg, sizeof(msg), "%s connect %s\n",
+                SERVER_ID, c->base.ipaddr);
+            printf("%s", msg);
+            // sendMetric(msg);
+
             // TODO: Ignore extended methods (send "method not allowed" response)
             // TODO: Handle requests while the client is still receiving blocks. 
-
             struct coapClient* client = findExistingClient(&clientQueueCoap, &clientAddr);
+            if(client == NULL) {
+                client = malloc(sizeof(struct coapClient));
+                if (!client) {
+                    fprintf(stderr, "Out of memory");
+                    continue;
+                }
 
-            // RST messages
-            if(type == 0b11) {
-                printf("Received RST\n");
+                client->clientAddr = clientAddr;
+                client->addrLen = addrLen;
+                client->base.sendNext = now + delay;
+                client->base.timeConnected = 0;
+                client->blockNumber = 0;
+                client->tkl = tkl;
+                client->retransmits = 0;
+                client->messageId = 1;
+                client->receivedAck = true;
+                client->receivedRst = true;
+                memcpy(client->token, token, 8);
+                snprintf(client->base.ipaddr, INET_ADDRSTRLEN, "%s", inet_ntoa(clientAddr.sin_addr));
+                queue_append(&clientQueueCoap, (struct baseClient*)client);
+            }
+
+            if (type == TYPE_RST) {
+                client->receivedRst = true;
             }
             else if (type == TYPE_ACK) {
                 client->receivedAck = true;
-                client->messageId += 1;
                 client->retransmits = 0;
             }
             else if (class == CLASS_REQUEST && detail == DETAIL_GET) {
                 printf("GET request from %s of type %d with tkl=%d and msgId1=%u\n", inet_ntoa(clientAddr.sin_addr), type, tkl, msgId);
+                client->receivedGet = true;
+            } 
 
-                // Handle new client
-                if(client == NULL) {
-                    client = malloc(sizeof(struct coapClient));
-                    if (!client) {
-                        fprintf(stderr, "Out of memory");
-                        continue;
-                    }
+            // If a CON (Confirmable) request, first send seperate ACK response. 
+            // The response does not need to be confirmable. (5.2.2 and 5.2.3)
+            if (type == TYPE_CONFIRMABLE) {
+                uint8_t ack[4];
+                ack[0] = (0b01 << 6) | (0b10 << 4) | 0;   // Version = 1, Type = ACK (2), TKL = 0
+                ack[1] = 0;                               // Code = 0.00 (empty ACK)
+                ack[2] = buffer[2];                       // Same Message ID MSB
+                ack[3] = buffer[3];                       // Same Message ID LSB
 
-                    client->clientAddr = clientAddr;
-                    client->addrLen = addrLen;
-                    client->base.sendNext = now + delay;
-                    client->base.timeConnected = 0;
-                    client->blockNumber = 0;
-                    client->tkl = tkl;
-                    client->retransmits = 0;
-                    client->receivedAck = true;
-                    client->messageId = 12345;
-                    memcpy(client->token, token, 8);
-                    snprintf(client->base.ipaddr, INET_ADDRSTRLEN, "%s", inet_ntoa(clientAddr.sin_addr));
-                    queue_append(&clientQueueCoap, (struct baseClient*)client);
-                }
-
-                // TODO: If a CON (Confirmable) request, first send seperate CON response. 
-                // The response does not need to be confirmable. (5.2.2 and 5.2.3)
-                // Wait just before the backoff time (maybe). 
-                // Maybe respond to all kinds of CON messages, not just GET
-                if (type == TYPE_CONFIRMABLE) {
-                    uint8_t ack[4];
-                    ack[0] = (0b01 << 6) | (0b10 << 4) | 0;         // Version = 1, Type = ACK (2), TKL = 0
-                    ack[1] = 0;                               // Code = 0.00 (empty ACK)
-                    ack[2] = buffer[2];                       // Same Message ID (high byte)
-                    ack[3] = buffer[3];                       // Same Message ID (low byte)
-
-                    int out = sendto(sockFd, ack, sizeof(ack), 0, (struct sockaddr *)&clientAddr, addrLen);
-                    printf("ACK sendto: %d with messageId=%u\n", out, msgId);
-                }
-            } else {
-                // Logging
+                int out = sendto(sockFd, ack, sizeof(ack), 0, (struct sockaddr *)&clientAddr, addrLen);
+                printf("ACK sendto: %d with messageId=%u\n", out, msgId);
             }
         }
     }

@@ -89,6 +89,19 @@ function startMqtt() {
     exec "$BIN_DIR/mqtt_pit" "$port" "$maxEvents" "$epollTimeoutInterval" "$pubrelInterval" "$maxPacketsPerClient" "$maxNoClients"
 }
 
+function startCoap() {
+    [ $# -ne 4 ] && invalidAmountOfArgs "coap_pit"
+    allArgsAreNumbers "$@"
+
+    local port=$1
+    local delay=$2
+    local ACK_TIMEOUT = $3
+    local MAX_RETRANSMIT = $4
+    echo "Starting coap_pit with port=$port, delay=$delay, ACK_TIMEOUT=$ACK_TIMEOUT, MAX_RETRANSMIT=$MAX_RETRANSMIT"
+
+    exec "$BIN_DIR/coap_pit" "$port" "$delay" "$ACK_TIMEOUT" "$MAX_RETRANSMIT"
+}
+
 function stopServer() {
     local server="$1"
     local pid_file="$PID_DIR/${server}.pid"
@@ -102,11 +115,6 @@ function stopServer() {
 
 function status() {
     # TODO: Only check for single server
-    :
-}
-
-function stopServer() {
-    # TODO
     :
 }
 
@@ -124,6 +132,9 @@ case "$1" in
                 ;;
             mqtt)
                 startMqtt "$@"
+                ;;
+            coap)
+                startCoap "$@"
                 ;;
             *)
                 echo "Unknown protocol: $protocol"
