@@ -21,11 +21,10 @@ void queue_init(struct queue *q) {
     q->length = 0;
 }
 
-// TODO: Priority queue for coap
 void queue_append(struct queue *q, struct baseClient *c) {
-    c->next = NULL;
+    c->next = NULL; // Removes old next value
     if (q->tail != NULL) {
-        q->tail->next = c;
+        q->tail->next = c; // Update next pointer correctly
     } else {
         q->head = c;
     }
@@ -38,23 +37,10 @@ struct baseClient *queue_pop(struct queue *q) {
     struct baseClient *c = q->head;
     q->head = c->next;
     if (!q->head) {
-        q->tail = NULL;
+        q->tail = NULL; // Remove tail if only one element in queue
     }
     q->length--;
     return c;
-}
-
-struct coapClient* findExistingClient(struct queue *q, struct sockaddr_in *addr) {
-    struct baseClient *current = q->head;
-    while (current != NULL) {
-        struct coapClient *coap = (struct coapClient *)current;
-        if (coap->clientAddr.sin_addr.s_addr == addr->sin_addr.s_addr &&
-            coap->clientAddr.sin_port == addr->sin_port) {
-            return coap;
-        }
-        current = current->next;
-    }
-    return NULL;
 }
 
 int createServer(int port) {

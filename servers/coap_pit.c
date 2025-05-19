@@ -25,12 +25,29 @@
 #define MAX_BUF_LEN 1024
 #define SERVER_ID "CoAP"
 
+struct coapClient *clients = NULL;
+
 int port = 5683;
 int timeout = -1;
 int delay = 1000;
 int ACK_TIMEOUT = 2000;
 int MAX_RETRANSMIT = 4;
 int sockFd;
+
+void addClient(struct coapClient *client) {
+    HASH_ADD(hh, clients, clientAddr, sizeof(struct sockaddr_in), client);
+}
+
+void deleteClient(struct coapClient *client) {
+    HASH_DEL(clients, client);
+    free(client);
+}
+
+struct coapClient *findExistingClient(struct sockaddr_in *addr) {
+    struct coapClient *result = NULL;
+    HASH_FIND(hh, clients, addr, sizeof(struct sockaddr_in), result);
+    return result;
+}
 
 int sendCoapBlockResponse(uint16_t messageId, uint8_t* token, uint8_t tkl, uint32_t* blockNumber, struct sockaddr_in* addr, socklen_t addrLen) {
     if(*blockNumber > 0xFFFFF) {
@@ -103,10 +120,10 @@ int sendPing(uint16_t messageId, struct sockaddr_in* addr, socklen_t addrLen) {
 
 int main(int argc, char* argv[]) {
     (void)argc;
-    port = atoi(argv[1]);
-    delay = atoi(argv[2]);
-    ACK_TIMEOUT = atoi(argv[3]);
-    MAX_RETRANSMIT = atoi(argv[4]);
+    // port = atoi(argv[1]);
+    // delay = atoi(argv[2]);
+    // ACK_TIMEOUT = atoi(argv[3]);
+    // MAX_RETRANSMIT = atoi(argv[4]);
     struct sockaddr_in serverAddr;
 
     if ((sockFd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
@@ -176,6 +193,7 @@ int main(int argc, char* argv[]) {
                             SERVER_ID, c->base.ipaddr, timeTrapped);
                         printf("%s", msg);
                         // sendMetric(msg);
+                        deleteClient(c);
                         free(c);
                         continue;
                     }
@@ -268,15 +286,9 @@ int main(int argc, char* argv[]) {
                 memcpy(token, &buffer[4], tkl);
             }
 
-            char msg[256];
-            snprintf(msg, sizeof(msg), "%s connect %s\n",
-                SERVER_ID, c->base.ipaddr);
-            printf("%s", msg);
-            // sendMetric(msg);
-
             // TODO: Ignore extended methods (send "method not allowed" response)
             // TODO: Handle requests while the client is still receiving blocks. 
-            struct coapClient* client = findExistingClient(&clientQueueCoap, &clientAddr);
+            struct coapClient* client = findExistingClient(&clientAddr);
             if(client == NULL) {
                 client = malloc(sizeof(struct coapClient));
                 if (!client) {
@@ -297,8 +309,15 @@ int main(int argc, char* argv[]) {
                 memcpy(client->token, token, 8);
                 snprintf(client->base.ipaddr, INET_ADDRSTRLEN, "%s", inet_ntoa(clientAddr.sin_addr));
                 queue_append(&clientQueueCoap, (struct baseClient*)client);
-            }
+                addClient(client);
 
+                char msg[256];
+                snprintf(msg, sizeof(msg), "%s connect %s\n",
+                    SERVER_ID, client->base.ipaddr);
+                printf("%s", msg);
+                // sendMetric(msg);
+            }
+            
             if (type == TYPE_RST) {
                 client->receivedRst = true;
             }

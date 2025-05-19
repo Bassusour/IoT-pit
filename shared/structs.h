@@ -34,6 +34,7 @@ struct coapClient {
     uint8_t tkl;
     struct sockaddr_in clientAddr;
     socklen_t addrLen;
+    UT_hash_handle hh;
 };
 
 struct mqttClient {
@@ -53,6 +54,12 @@ struct queue {
     struct baseClient *head;
     struct baseClient *tail;
     int length;
+};
+
+struct priorityQueue {
+    struct baseClient **heapArray; // array of pointers
+    int size;
+    int capacity;
 };
 
 extern struct queue clientQueueTelnet;
@@ -103,13 +110,6 @@ void queue_append(struct queue *q, struct baseClient *c);
  * @return Pointer to the removed client or NULL if the queue is empty.
  */
 struct baseClient *queue_pop(struct queue *q);
-
-/**
- * @brief finds existing coapClient in specified queue
- * @param q Pointer to the queue
- * @param addr Pointer to the addr
- */
-struct coapClient* findExistingClient(struct queue *q, struct sockaddr_in *addr);
 
 /**
  * @brief Creates a standard TCP server with very large backlog
