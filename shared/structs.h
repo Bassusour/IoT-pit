@@ -64,7 +64,7 @@ struct priorityQueue {
 
 extern struct queue clientQueueTelnet;
 extern struct queue clientQueueUpnp;
-extern struct queue clientQueueCoap;
+extern struct priorityQueue clientQueueCoap;
 
 struct telnetStatistics {
     unsigned long totalConnects;
@@ -110,6 +110,12 @@ void queue_append(struct queue *q, struct baseClient *c);
  * @return Pointer to the removed client or NULL if the queue is empty.
  */
 struct baseClient *queue_pop(struct queue *q);
+
+void heap_init(struct priorityQueue *pq, int capacity);
+
+void heap_insert(struct priorityQueue *pq, struct baseClient *c);
+
+struct baseClient *heap_pop(struct priorityQueue *pq);
 
 /**
  * @brief Creates a standard TCP server with very large backlog

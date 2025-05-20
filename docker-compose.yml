@@ -70,7 +70,7 @@ services:
     volumes:
       - tarpit-sock:/tmp  # Share socket with prometheus-exporter
     ulimits:
-    command: ["start", "coap", "${COAP_PORT}", "${COAP_DELAY_MS}", "${COAP_ACK_TIMEOUT_MS}", "${COAP_MAX_RETRANSMIT}"]
+    command: ["start", "coap", "${COAP_PORT}", "${COAP_DELAY_MS}", "${COAP_ACK_TIMEOUT_MS}", "${COAP_MAX_RETRANSMIT}", "${COAP_MAX_NO_CLIENTS}"]
     depends_on:
       - prometheus-exporter
 

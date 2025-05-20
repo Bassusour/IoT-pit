@@ -32,6 +32,7 @@ int timeout = -1;
 int delay = 1000;
 int ACK_TIMEOUT = 2000;
 int MAX_RETRANSMIT = 4;
+int maxNoClients = 4096;
 int sockFd;
 
 void addClient(struct coapClient *client) {
@@ -124,7 +125,9 @@ int main(int argc, char* argv[]) {
     // delay = atoi(argv[2]);
     // ACK_TIMEOUT = atoi(argv[3]);
     // MAX_RETRANSMIT = atoi(argv[4]);
+    // maxNoClients = atoi(argv[5]);
     struct sockaddr_in serverAddr;
+    heap_init(&clientQueueCoap, maxNoClients);
 
     if ((sockFd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
         fprintf(stderr, "SSDP Socket creation failed");
@@ -159,9 +162,9 @@ int main(int argc, char* argv[]) {
     while (1) {
         long long now = currentTimeMs();
 
-        while (clientQueueCoap.head) {
-            if(clientQueueCoap.head->sendNext <= now){
-                struct baseClient *bc = queue_pop(&clientQueueCoap);
+        while (clientQueueCoap.size > 0) {
+            if(clientQueueCoap.heapArray[0]->sendNext <= now){
+                struct baseClient *bc = heap_pop(&clientQueueCoap);
                 struct coapClient *c = (struct coapClient *)bc;
                 
                 // Handle retransmits
@@ -183,18 +186,17 @@ int main(int argc, char* argv[]) {
                         // }
                         // printf("\n");
                         // printf("Sent block2 due to not receiving an ACK with out=%d messageId=%u tkl=%d blockNumber=%d\n", out, c->messageId, c->tkl, c->blockNumber);
-                        queue_append(&clientQueueCoap, (struct baseClient *)c);
+                        heap_insert(&clientQueueCoap, (struct baseClient *)c);
                         continue;
                     } else {
                         // Disconnect client
                         long long timeTrapped = c->base.timeConnected - (ACK_TIMEOUT * ((0b1 << MAX_RETRANSMIT) - 1));
                         char msg[256];
-                        snprintf(msg, sizeof(msg), "%s disconnect %s  %lld\n",
+                        snprintf(msg, sizeof(msg), "%s disconnect %s %lld\n",
                             SERVER_ID, c->base.ipaddr, timeTrapped);
                         printf("%s", msg);
                         // sendMetric(msg);
                         deleteClient(c);
-                        free(c);
                         continue;
                     }
                 } 
@@ -211,9 +213,9 @@ int main(int argc, char* argv[]) {
                 c->base.timeConnected += delay;
                 c->messageId += 1;
                 c->base.sendNext = now + delay;
-                queue_append(&clientQueueCoap, (struct baseClient *)c);
+                heap_insert(&clientQueueCoap, (struct baseClient *)c);
             } else {
-                timeout = clientQueueCoap.head->sendNext - now;
+                timeout = clientQueueCoap.heapArray[0]->sendNext - now;
                 break;
             }
         }
@@ -308,7 +310,7 @@ int main(int argc, char* argv[]) {
                 client->receivedRst = true;
                 memcpy(client->token, token, 8);
                 snprintf(client->base.ipaddr, INET_ADDRSTRLEN, "%s", inet_ntoa(clientAddr.sin_addr));
-                queue_append(&clientQueueCoap, (struct baseClient*)client);
+                heap_insert(&clientQueueCoap, (struct baseClient*)client);
                 addClient(client);
 
                 char msg[256];

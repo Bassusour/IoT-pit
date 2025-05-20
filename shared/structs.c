@@ -11,7 +11,7 @@
 
 struct queue clientQueueTelnet;
 struct queue clientQueueUpnp;
-struct queue clientQueueCoap;
+struct priorityQueue clientQueueCoap;
 struct telnetStatistics statsTelnet;
 struct upnpStatistics statsUpnp;
 struct mqttStatistics statsMqtt;
@@ -41,6 +41,71 @@ struct baseClient *queue_pop(struct queue *q) {
     }
     q->length--;
     return c;
+}
+
+void heap_init(struct priorityQueue *pq, int capacity) {
+    pq->heapArray = malloc(sizeof(struct baseClient *) * capacity);
+    if (!pq->heapArray) {
+        fprintf(stderr, "malloc for priority queue failed\n");
+        exit(EXIT_FAILURE);
+    }
+    pq->capacity = capacity;
+    pq->size = 0;
+}
+
+void swap(struct baseClient **a, struct baseClient **b) {
+    struct baseClient *temp = *a;
+    *a = *b;
+    *b = temp;
+}
+
+void heap_insert(struct priorityQueue *pq, struct baseClient *c) {
+    if (pq->size >= pq->capacity) {
+        fprintf(stderr, "Priority queue has hit capacity. Can't add any more clients\n");
+        return;
+    }
+
+    int i = pq->size;
+    pq->heapArray[i] = c;
+
+    // Bubble up
+    while (i > 0) {
+        int parent = (i - 1) / 2;
+        if (pq->heapArray[parent]->sendNext <= pq->heapArray[i]->sendNext) {
+            break;
+        }
+        swap(&pq->heapArray[i], &pq->heapArray[parent]);
+        i = parent;
+    }
+
+    pq->size += 1;
+}
+
+struct baseClient *heap_pop(struct priorityQueue *pq) {
+    if (pq->size == 0) return NULL;
+    struct baseClient *root = pq->heapArray[0];
+    pq->heapArray[0] = pq->heapArray[pq->size-1];
+    pq->size -= 1;
+
+    // Heapify down
+    int i = 0;
+    while (1) {
+        int left = 2 * i + 1;
+        int right = 2 * i + 2;
+        int smallest = i;
+
+        if (left < pq->size && pq->heapArray[left]->sendNext < pq->heapArray[smallest]->sendNext)
+            smallest = left;
+        if (right < pq->size && pq->heapArray[right]->sendNext < pq->heapArray[smallest]->sendNext)
+            smallest = right;
+
+        if (smallest == i) break;
+
+        swap(&pq->heapArray[i], &pq->heapArray[smallest]);
+        i = smallest;
+    }
+
+    return root;
 }
 
 int createServer(int port) {
