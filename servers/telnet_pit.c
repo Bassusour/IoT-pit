@@ -110,7 +110,7 @@ int main(int argc, char *argv[]) {
                     } else {
                         long long timeTrapped = c->base.timeConnected;
                         char msg[256];
-                        snprintf(msg, sizeof(msg), "%s disconnect %s  %lld\n",
+                        snprintf(msg, sizeof(msg), "%s disconnect %s %lld\n",
                             SERVER_ID, c->base.ipaddr, timeTrapped);
                         printf("%s", msg);
                         sendMetric(msg);
