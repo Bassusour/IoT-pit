@@ -90,7 +90,7 @@ function startMqtt() {
 }
 
 function startCoap() {
-    [ $# -ne 4 ] && invalidAmountOfArgs "coap_pit"
+    [ $# -ne 5 ] && invalidAmountOfArgs "coap_pit"
     allArgsAreNumbers "$@"
 
     local port=$1

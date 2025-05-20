@@ -195,7 +195,7 @@ int main(int argc, char* argv[]) {
                         snprintf(msg, sizeof(msg), "%s disconnect %s %lld\n",
                             SERVER_ID, c->base.ipaddr, timeTrapped);
                         printf("%s", msg);
-                        // sendMetric(msg);
+                        sendMetric(msg);
                         deleteClient(c);
                         continue;
                     }
@@ -317,7 +317,7 @@ int main(int argc, char* argv[]) {
                 snprintf(msg, sizeof(msg), "%s connect %s\n",
                     SERVER_ID, client->base.ipaddr);
                 printf("%s", msg);
-                // sendMetric(msg);
+                sendMetric(msg);
             }
             
             if (type == TYPE_RST) {
