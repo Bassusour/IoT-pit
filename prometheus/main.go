@@ -170,7 +170,7 @@ func NewMetrics() *metrics {
 		coapClients: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "coap_pit_clients",
 			Help: "Connected clients for CoAP",
-		}, []string{"ip", "country", "latitude", "longitude"}),
+		}, []string{/*"ip", */"country", "latitude", "longitude"}),
 		// -------------------
 		sshTotalConnects: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "ssh_pit_total_connects",
@@ -187,7 +187,7 @@ func NewMetrics() *metrics {
 		sshClients: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ssh_pit_clients",
 			Help: "Connected clients for SSH",
-		}, []string{"ip", "country", "latitude", "longitude"}),
+		}, []string{/*"ip", */"country", "latitude", "longitude"}),
 	}
 	prometheus.MustRegister(m.telnetTotalConnects, m.telnetTotalTrappedTime, m.telnetActiveClients, m.telnetClients,
 		m.upnpTotalConnects, m.upnpTotalTrappedTime, m.upnpActiveClients, m.upnpClients, m.upnpOtherHttpRequests, m.upnpMSearchRequests, m.upnpNonMSearchRequests,
@@ -333,6 +333,10 @@ func handleConnect(server string, country string, lat float64, lon float64, metr
 		metrics.coapTotalConnects.Inc()
 		metrics.coapActiveClients.Inc()
 		metrics.coapClients.WithLabelValues(country, fmt.Sprintf("%f", lat), fmt.Sprintf("%f", lon)).Inc()
+	case "SSH":
+		metrics.sshTotalConnects.Inc()
+		metrics.sshActiveClients.Inc()
+		metrics.sshClients.WithLabelValues(country, fmt.Sprintf("%f", lat), fmt.Sprintf("%f", lon)).Inc()
 	}
 }
 
@@ -350,6 +354,9 @@ func handleDisconnect(server string, timeTrapped float64, metrics *metrics) {
 	case "CoAP":
 		metrics.coapActiveClients.Dec()
 		metrics.coapTotalTrappedTime.Add(timeTrapped)
+	case "SSH":
+		metrics.sshActiveClients.Dec()
+		metrics.sshTotalTrappedTime.Add(timeTrapped)
 	}
 }
 
