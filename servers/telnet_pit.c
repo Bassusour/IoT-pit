@@ -17,7 +17,7 @@
 // #define DELAY_MS 100
 // #define HEARTBEAT_INTERVAL_MS 600000 // 10 minutes
 // #define FD_LIMIT 4096
-#define SERVER_ID "telnet"
+#define SERVER_ID "Telnet"
 
 #define IAC 255
 #define DO 253
