@@ -95,8 +95,8 @@ function startCoap() {
 
     local port=$1
     local delay=$2
-    local ACK_TIMEOUT = $3
-    local MAX_RETRANSMIT = $4
+    local ACK_TIMEOUT=$3
+    local MAX_RETRANSMIT=$4
     local maxNoClients=$5
     echo "Starting coap_pit with port=$port, delay=$delay, ACK_TIMEOUT=$ACK_TIMEOUT, MAX_RETRANSMIT=$MAX_RETRANSMIT max-no-clients=$maxNoClients"
 
@@ -104,14 +104,8 @@ function startCoap() {
 }
 
 function stopServer() {
-    local server="$1"
-    local pid_file="$PID_DIR/${server}.pid"
-    if [ -f "$pid_file" ]; then
-        kill "$(cat "$pid_file")" && rm "$pid_file"
-        echo "Stopped $server"
-    else
-        echo "$server not running"
-    fi
+    # TODO
+    :
 }
 
 function status() {

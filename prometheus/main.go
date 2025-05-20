@@ -48,6 +48,11 @@ type metrics struct {
 	coapTotalTrappedTime prometheus.Counter
 	coapActiveClients prometheus.Gauge
 	coapClients *prometheus.CounterVec
+
+	sshTotalConnects prometheus.Counter
+	sshTotalTrappedTime prometheus.Counter
+	sshActiveClients prometheus.Gauge
+	sshClients *prometheus.CounterVec
 }
 
 // Global variable
@@ -166,12 +171,30 @@ func NewMetrics() *metrics {
 			Name: "coap_pit_clients",
 			Help: "Connected clients for CoAP",
 		}, []string{"ip", "country", "latitude", "longitude"}),
+		// -------------------
+		sshTotalConnects: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "ssh_pit_total_connects",
+			Help: "Total client connections for SSH",
+		}),
+		sshTotalTrappedTime: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "ssh_pit_total_trapped_time_ms",
+			Help: "Total time clients were trapped (ms) for SSH",
+		}),
+		sshActiveClients: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "ssh_pit_current_connected_clients",
+			Help: "Currently connected clients for SSH",
+		}),
+		sshClients: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "ssh_pit_clients",
+			Help: "Connected clients for SSH",
+		}, []string{"ip", "country", "latitude", "longitude"}),
 	}
 	prometheus.MustRegister(m.telnetTotalConnects, m.telnetTotalTrappedTime, m.telnetActiveClients, m.telnetClients,
 		m.upnpTotalConnects, m.upnpTotalTrappedTime, m.upnpActiveClients, m.upnpClients, m.upnpOtherHttpRequests, m.upnpMSearchRequests, m.upnpNonMSearchRequests,
 		m.mqttTotalConnects, m.mqttTotalTrappedTime, m.mqttActiveClients, m.mqttClients, m.mqttConacks, m.mqttUnsubscribe, m.mqttPubrec,
 		m.mqttMalformedConnect, m.mqttConnectVersions, m.mqttSubscribeTopics, m.mqttCredentials, m.mqttPublishTopics,
-		m.coapTotalConnects, m.coapTotalTrappedTime, m.coapActiveClients, m.coapClients,)
+		m.coapTotalConnects, m.coapTotalTrappedTime, m.coapActiveClients, m.coapClients,
+		m.sshTotalConnects, m.sshTotalTrappedTime, m.sshActiveClients, m.sshClients)
 	return m
 }
 

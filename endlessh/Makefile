@@ -5,11 +5,12 @@ CPPFLAGS =
 LDFLAGS  = -ggdb3
 LDLIBS   =
 PREFIX   = /usr/local
+SHARED   = /structs.c
 
 all: endlessh
 
-endlessh: endlessh.c
-	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ endlessh.c $(LDLIBS)
+endlessh: endlessh.c $(SHARED)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ endlessh.c $(SHARED) $(LDLIBS)
 
 install: endlessh
 	install -d $(DESTDIR)$(PREFIX)/bin

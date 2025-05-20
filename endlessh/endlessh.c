@@ -25,7 +25,9 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <syslog.h>
+#include "/structs.h"
 
+#define SERVER_ID "SSH"
 #define ENDLESSH_VERSION           1.1
 
 #define DEFAULT_PORT              2222
@@ -175,6 +177,13 @@ client_destroy(struct client *client)
             dt / 1000, dt % 1000,
             client->bytes_sent);
     statistics.milliseconds += dt;
+
+    char msg[256];
+    snprintf(msg, sizeof(msg), "%s disconnect %s %lld\n",
+        SERVER_ID, client->ipaddr, dt);
+    printf("%s", msg);
+    sendMetric(msg);
+
     close(client->fd);
     free(client);
 }
@@ -830,6 +839,11 @@ main(int argc, char **argv)
                     logmsg(log_info, "ACCEPT host=%s port=%d fd=%d n=%d/%d",
                             client->ipaddr, client->port, client->fd,
                             fifo->length, config.max_clients);
+                    char msg[256];
+                    snprintf(msg, sizeof(msg), "%s connect %s\n",
+                        SERVER_ID, client->ipaddr);
+                    printf("%s", msg);
+                    sendMetric(msg);
                 }
             }
         }

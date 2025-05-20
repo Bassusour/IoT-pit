@@ -52,13 +52,6 @@ void initializeStats(){
 }
 
 int main(int argc, char *argv[]) {
-    // testing
-    char msg[256];
-    snprintf(msg, sizeof(msg), "%s connect %s\n",
-        SERVER_ID, "82.211.213.247");
-    fprintf(stderr, "%s", msg);
-    sendMetric(msg);
-
     (void)argc;
     port = atoi(argv[1]);
     delay = atoi(argv[2]);
