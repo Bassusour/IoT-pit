@@ -120,6 +120,17 @@ int sendPing(uint16_t messageId, struct sockaddr_in* addr, socklen_t addrLen) {
 }
 
 int main(int argc, char* argv[]) {
+    // testing
+    char msg[256];
+    snprintf(msg, sizeof(msg), "%s connect %s\n",
+        SERVER_ID, "17.117.247.220");
+    fprintf(stderr, "%s", msg);
+    sendMetric(msg);
+        // testing
+    snprintf(msg, sizeof(msg), "%s connect %s\n",
+        SERVER_ID, "74.17.158.179");
+    fprintf(stderr, "%s", msg);
+    sendMetric(msg);
     (void)argc;
     // port = atoi(argv[1]);
     // delay = atoi(argv[2]);

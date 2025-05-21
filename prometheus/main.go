@@ -18,23 +18,15 @@ import (
 )
 
 type metrics struct {
-	telnetTotalConnects  prometheus.Counter
-	telnetTotalTrappedTime prometheus.Counter
-	telnetActiveClients prometheus.Gauge
-	telnetClients *prometheus.CounterVec
+	totalConnects  *prometheus.CounterVec
+	totalTrappedTime *prometheus.CounterVec
+	activeClients *prometheus.GaugeVec
+	clients *prometheus.CounterVec
 
-	upnpTotalConnects prometheus.Counter
-	upnpTotalTrappedTime prometheus.Counter
-	upnpActiveClients prometheus.Gauge
 	upnpOtherHttpRequests *prometheus.CounterVec
 	upnpMSearchRequests *prometheus.CounterVec
 	upnpNonMSearchRequests *prometheus.CounterVec
-	upnpClients *prometheus.CounterVec
 
-	mqttTotalConnects prometheus.Counter
-	mqttTotalTrappedTime prometheus.Counter
-	mqttActiveClients prometheus.Gauge
-	mqttClients *prometheus.CounterVec
 	mqttMalformedConnect prometheus.Counter
 	mqttConnectVersions *prometheus.CounterVec
 	mqttSubscribeTopics *prometheus.CounterVec
@@ -43,16 +35,6 @@ type metrics struct {
 	mqttConacks prometheus.Counter
 	mqttUnsubscribe prometheus.Counter
 	mqttPubrec prometheus.Counter
-
-	coapTotalConnects prometheus.Counter
-	coapTotalTrappedTime prometheus.Counter
-	coapActiveClients prometheus.Gauge
-	coapClients *prometheus.CounterVec
-
-	sshTotalConnects prometheus.Counter
-	sshTotalTrappedTime prometheus.Counter
-	sshActiveClients prometheus.Gauge
-	sshClients *prometheus.CounterVec
 }
 
 // Global variable
@@ -60,39 +42,23 @@ var db *maxminddb.Reader
 
 func NewMetrics() *metrics {
 	m := &metrics{
-		telnetTotalConnects: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "telnet_pit_total_connects",
-			Help: "Total client connections for telnet",
-		}),
-		telnetTotalTrappedTime: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "telnet_pit_total_trapped_time_ms",
-			Help: "Total time clients were trapped (ms) for telnet",
-		}),
-		telnetActiveClients: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "telnet_pit_current_connected_clients",
-			Help: "Currently connected clients for telnet",
-		}),
-		telnetClients: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "telnet_pit_clients",
-			Help: "Connected clients for telnet",
-		}, []string{/*"ip", */"country", "latitude", "longitude"}),
-		// -------------
-		upnpTotalConnects: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "upnp_pit_total_connects",
-			Help: "Total http GET requests for the fake .xml file",
-		}),
-		upnpTotalTrappedTime: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "upnp_pit_total_trapped_time_ms",
-			Help: "Total time clients were trapped (ms) for upnp",
-		}),
-		upnpActiveClients: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "upnp_pit_current_connected_clients",
-			Help: "Currently connected clients for upnp",
-		}),
-		upnpClients: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "upnp_pit_clients",
-			Help: "Connected clients for upnp",
-		}, []string{/*"ip", */"country", "latitude", "longitude"}),
+		totalConnects: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "total_connects",
+			Help: "Total client connections",
+		}, []string{"server"}),
+		totalTrappedTime: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "total_trapped_time_ms",
+			Help: "Total time clients were trapped (ms)",
+		}, []string{"server"}),
+		activeClients: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "current_connected_clients",
+			Help: "Currently connected clients",
+		}, []string{"server"}),
+		clients: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "tarpitted_clients",
+			Help: "Connected clients",
+		}, []string{/*"ip", */"server","country", "latitude", "longitude"}),
+		// ---------------
 		upnpOtherHttpRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "upnp_other_http_requests",
 			Help: "Number of http requests that are not for the .xml file",
@@ -106,22 +72,6 @@ func NewMetrics() *metrics {
 			Help: "Number of SSDP requests that are not M-SEARCH",
 		}, []string{"ip"}),
 		// ---------------
-		mqttTotalConnects: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "mqtt_pit_total_connects",
-			Help: "Total client connections for MQTT",
-		}),
-		mqttTotalTrappedTime: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "mqtt_pit_total_trapped_time_ms",
-			Help: "Total time clients were trapped (ms) for MQTT",
-		}),
-		mqttActiveClients: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "mqtt_pit_current_connected_clients",
-			Help: "Currently connected clients for MQTT",
-		}),
-		mqttClients: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "mqtt_pit_clients",
-			Help: "Connected clients for MQTT",
-		}, []string{/*"ip", */"country", "latitude", "longitude"}),
 		mqttMalformedConnect: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "mqtt_pit_malformed_connects",
 			Help: "Malformed MQTT CONNECT packets received",
@@ -154,47 +104,11 @@ func NewMetrics() *metrics {
 			Name: "mqtt_pit_pubrec_counter",
 			Help: "Total PUBREC requests for MQTT",
 		}),
-		// ------------------
-		coapTotalConnects: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "coap_pit_total_connects",
-			Help: "Total client connections for CoAP",
-		}),
-		coapTotalTrappedTime: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "coap_pit_total_trapped_time_ms",
-			Help: "Total time clients were trapped (ms) for CoAP",
-		}),
-		coapActiveClients: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "coap_pit_current_connected_clients",
-			Help: "Currently connected clients for CoAP",
-		}),
-		coapClients: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "coap_pit_clients",
-			Help: "Connected clients for CoAP",
-		}, []string{/*"ip", */"country", "latitude", "longitude"}),
-		// -------------------
-		sshTotalConnects: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "ssh_pit_total_connects",
-			Help: "Total client connections for SSH",
-		}),
-		sshTotalTrappedTime: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "ssh_pit_total_trapped_time_ms",
-			Help: "Total time clients were trapped (ms) for SSH",
-		}),
-		sshActiveClients: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "ssh_pit_current_connected_clients",
-			Help: "Currently connected clients for SSH",
-		}),
-		sshClients: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "ssh_pit_clients",
-			Help: "Connected clients for SSH",
-		}, []string{/*"ip", */"country", "latitude", "longitude"}),
 	}
-	prometheus.MustRegister(m.telnetTotalConnects, m.telnetTotalTrappedTime, m.telnetActiveClients, m.telnetClients,
-		m.upnpTotalConnects, m.upnpTotalTrappedTime, m.upnpActiveClients, m.upnpClients, m.upnpOtherHttpRequests, m.upnpMSearchRequests, m.upnpNonMSearchRequests,
-		m.mqttTotalConnects, m.mqttTotalTrappedTime, m.mqttActiveClients, m.mqttClients, m.mqttConacks, m.mqttUnsubscribe, m.mqttPubrec,
-		m.mqttMalformedConnect, m.mqttConnectVersions, m.mqttSubscribeTopics, m.mqttCredentials, m.mqttPublishTopics,
-		m.coapTotalConnects, m.coapTotalTrappedTime, m.coapActiveClients, m.coapClients,
-		m.sshTotalConnects, m.sshTotalTrappedTime, m.sshActiveClients, m.sshClients)
+	prometheus.MustRegister(m.totalConnects, m.totalTrappedTime, m.activeClients, m.clients, 
+		m.upnpOtherHttpRequests, m.upnpMSearchRequests, m.upnpNonMSearchRequests,
+		m.mqttConacks, m.mqttUnsubscribe, m.mqttPubrec,
+		m.mqttMalformedConnect, m.mqttConnectVersions, m.mqttSubscribeTopics, m.mqttCredentials, m.mqttPublishTopics,)
 	return m
 }
 
@@ -208,13 +122,16 @@ func main() {
     }
     defer db.Close()
 
-	// var server = "telnet"
+
 	// Register metrics
 	m := NewMetrics()
-	// m.telnetTotalConnects.WithLabelValues(server).Add(1)
-	// m.telnetTotalTrappedTime.WithLabelValues(server).Add(2)
-	// m.telnetActiveClients.WithLabelValues(server).Set(3)
-	// m.telnetClients.WithLabelValues(server, "82.211.212.0", "Denmark", "55.676097", "12.568337").Set(4)
+
+	// test values
+	m.totalTrappedTime.WithLabelValues("Telnet").Add(10)
+	m.totalTrappedTime.WithLabelValues("UPnP").Add(20)
+	m.totalTrappedTime.WithLabelValues("MQTT").Add(30)
+	m.totalTrappedTime.WithLabelValues("CoAP").Add(40)
+	m.totalTrappedTime.WithLabelValues("SSH").Add(50)
 
 	// Start socket listener
 	go listenForMetrics("/tmp/tarpit_exporter.sock", m)
@@ -318,45 +235,45 @@ func handleMetric(line string, metrics *metrics) {
 func handleConnect(server string, country string, lat float64, lon float64, metrics *metrics) {
 	switch server {
 	case "Telnet":
-		metrics.telnetTotalConnects.Inc()
-		metrics.telnetActiveClients.Inc()
-		metrics.telnetClients.WithLabelValues(country, fmt.Sprintf("%f", lat), fmt.Sprintf("%f", lon)).Inc()
+		metrics.totalConnects.WithLabelValues("Telnet").Inc()
+		metrics.activeClients.WithLabelValues("Telnet").Inc()
+		metrics.clients.WithLabelValues("Telnet", country, fmt.Sprintf("%f", lat), fmt.Sprintf("%f", lon)).Inc()
 	case "UPnP":
-		metrics.upnpTotalConnects.Inc()
-		metrics.upnpActiveClients.Inc()
-		metrics.upnpClients.WithLabelValues(country, fmt.Sprintf("%f", lat), fmt.Sprintf("%f", lon)).Inc()
+		metrics.totalConnects.WithLabelValues("UPnP").Inc()
+		metrics.activeClients.WithLabelValues("UPnP").Inc()
+		metrics.clients.WithLabelValues("UPnP", country, fmt.Sprintf("%f", lat), fmt.Sprintf("%f", lon)).Inc()
 	case "MQTT":
-		metrics.mqttTotalConnects.Inc()
-		metrics.mqttActiveClients.Inc()
-		metrics.mqttClients.WithLabelValues(country, fmt.Sprintf("%f", lat), fmt.Sprintf("%f", lon)).Inc()
+		metrics.totalConnects.WithLabelValues("MQTT").Inc()
+		metrics.activeClients.WithLabelValues("MQTT").Inc()
+		metrics.clients.WithLabelValues("MQTT", country, fmt.Sprintf("%f", lat), fmt.Sprintf("%f", lon)).Inc()
 	case "CoAP":
-		metrics.coapTotalConnects.Inc()
-		metrics.coapActiveClients.Inc()
-		metrics.coapClients.WithLabelValues(country, fmt.Sprintf("%f", lat), fmt.Sprintf("%f", lon)).Inc()
+		metrics.totalConnects.WithLabelValues("CoAP").Inc()
+		metrics.activeClients.WithLabelValues("CoAP").Inc()
+		metrics.clients.WithLabelValues("CoAP", country, fmt.Sprintf("%f", lat), fmt.Sprintf("%f", lon)).Inc()
 	case "SSH":
-		metrics.sshTotalConnects.Inc()
-		metrics.sshActiveClients.Inc()
-		metrics.sshClients.WithLabelValues(country, fmt.Sprintf("%f", lat), fmt.Sprintf("%f", lon)).Inc()
+		metrics.totalConnects.WithLabelValues("SSH").Inc()
+		metrics.activeClients.WithLabelValues("SSH").Inc()
+		metrics.clients.WithLabelValues("SSH", country, fmt.Sprintf("%f", lat), fmt.Sprintf("%f", lon)).Inc()
 	}
 }
 
 func handleDisconnect(server string, timeTrapped float64, metrics *metrics) {
 	switch server {
 	case "Telnet":
-		metrics.telnetActiveClients.Dec()
-		metrics.telnetTotalTrappedTime.Add(timeTrapped)
+		metrics.activeClients.WithLabelValues("Telnet").Dec()
+		metrics.totalTrappedTime.WithLabelValues("Telnet").Add(timeTrapped)
 	case "UPnP":
-		metrics.upnpActiveClients.Dec()
-		metrics.upnpTotalTrappedTime.Add(timeTrapped)
+		metrics.activeClients.WithLabelValues("UPnP").Dec()
+		metrics.totalTrappedTime.WithLabelValues("UPnP").Add(timeTrapped)
 	case "MQTT":
-		metrics.mqttActiveClients.Dec()
-		metrics.mqttTotalTrappedTime.Add(timeTrapped)
+		metrics.activeClients.WithLabelValues("MQTT").Dec()
+		metrics.totalTrappedTime.WithLabelValues("MQTT").Add(timeTrapped)
 	case "CoAP":
-		metrics.coapActiveClients.Dec()
-		metrics.coapTotalTrappedTime.Add(timeTrapped)
+		metrics.activeClients.WithLabelValues("CoAP").Dec()
+		metrics.totalTrappedTime.WithLabelValues("CoAP").Add(timeTrapped)
 	case "SSH":
-		metrics.sshActiveClients.Dec()
-		metrics.sshTotalTrappedTime.Add(timeTrapped)
+		metrics.activeClients.WithLabelValues("SSH").Dec()
+		metrics.totalTrappedTime.WithLabelValues("SSH").Add(timeTrapped)
 	}
 }
 
