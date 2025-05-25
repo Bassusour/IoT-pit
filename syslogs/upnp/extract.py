@@ -7,7 +7,7 @@ from collections import defaultdict
 # from ace_tools import display_dataframe_to_user
 
 # === CONFIGURATION ===
-log_dir = "."  # directory containing log files
+log_dir = os.path.dirname(os.path.abspath(__file__))
 log_filenames = [f"syslog.{i}" for i in range(37, 0, -1)] + ["syslog"]
 # log_filenames = ["syslogTest"]
 
@@ -52,196 +52,192 @@ accept_pattern = re.compile(
 )
 
 # === DATA STRUCTURES ===
-request_counts = defaultdict(int)
-ip_connections = defaultdict(int)
-ip_durations = defaultdict(int)
-timestamps = []
-current_clients = []
-cumulative_total_connections = 0
-cumulative_connections = []
-wasted_time_series = []
-restart_times = []
-wasted_time_total = 0
-last_http_count = 0
-ssdp_total = 0
-ssdp_counts = defaultdict(int)
-http_counts = defaultdict(int)
-xml_counts = defaultdict(int)
-active_clients = {}  # ip -> connection start timestamp
+def extract_upnp_data():
+    request_counts = defaultdict(int)
+    ip_connections = defaultdict(int)
+    ip_durations = defaultdict(int)
+    timestamps = []
+    current_clients = []
+    cumulative_total_connections = 0
+    cumulative_connections = []
+    wasted_time_series = []
+    restart_times = []
+    wasted_time_total = 0
+    last_http_count = 0
+    ssdp_total = 0
+    ssdp_counts = defaultdict(int)
+    http_counts = defaultdict(int)
+    xml_counts = defaultdict(int)
+    active_clients = {}  # ip -> connection start timestamp
+    non_reset_wasted_total = 0
+    non_reset_wasted_series = []
 
-# === PROCESS FILES ===
-for fname in log_filenames:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    log_dir = script_dir
-    full_path = os.path.join(log_dir, fname)
-    if not os.path.isfile(full_path):
-        continue
+    non_reset_wasted_series.append((datetime.strptime("2025-04-23 05:45:09", "%Y-%m-%d %H:%M:%S"), 0))
 
-    with open(full_path, "r", encoding="utf-8", errors="ignore") as file:
-        for line in file:
-            repeat_match = repeat_pattern.search(line)
-            lines_to_process = [(line, 1)]
+    # === PROCESS FILES ===
+    # non_reset_wasted_total = 0
+    # non_reset_wasted_series = []
 
-            if repeat_match:
-                lines_to_process = [(f"{repeat_match.group('timestamp')} {repeat_match.group('inner')}",
-                                     int(repeat_match.group("count")))]
+    for fname in log_filenames:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        log_dir = script_dir
+        full_path = os.path.join(log_dir, fname)
+        if not os.path.isfile(full_path):
+            continue
 
-            for processed_line, multiplier in lines_to_process:
-                if "upnp_tarpit" not in processed_line or any(ip in line for ip in blacklisted_ips):
-                    continue
+        with open(full_path, "r", encoding="utf-8", errors="ignore") as file:
+            for line in file:
+                repeat_match = repeat_pattern.search(line)
+                lines_to_process = [(line, 1)]
 
-                if (match := request_pattern.search(processed_line)):
-                    method, url, ip = match["method"], match["url"], match["ip"]
-                    # if ip not in blacklisted_ips:
-                    request_counts[(method, url)] += multiplier
-                    ip_connections[ip] += multiplier
+                if repeat_match:
+                    lines_to_process = [(f"{repeat_match.group('timestamp')} {repeat_match.group('inner')}",
+                                        int(repeat_match.group("count")))]
 
-                elif (match := disconnect_pattern.search(processed_line)):
-                    ip = match["ip"]
-                    duration = int(match["duration"])
-                    ip_durations[ip] += duration * multiplier
-                    ts = datetime.strptime(match["timestamp"], "%Y-%m-%dT%H:%M:%S")
-                    for _ in range(multiplier):
-                        wasted_time_total += duration
-                        wasted_time_series.append((ts, wasted_time_total))
+                for processed_line, multiplier in lines_to_process:
+                    if "upnp_tarpit" not in processed_line or any(ip in line for ip in blacklisted_ips):
+                        continue
+
+                    if (match := request_pattern.search(processed_line)):
+                        method, url, ip = match["method"], match["url"], match["ip"]
+                        # if ip not in blacklisted_ips:
+                        request_counts[(method, url)] += multiplier
+                        ip_connections[ip] += multiplier
+
+                    elif (match := disconnect_pattern.search(processed_line)):
+                        ip = match["ip"]
+                        duration = int(match["duration"])
+                        ip_durations[ip] += duration * multiplier
+                        ts = datetime.strptime(match["timestamp"], "%Y-%m-%dT%H:%M:%S")
+                        for _ in range(multiplier):
+                            wasted_time_total += duration
+                            wasted_time_series.append((ts, wasted_time_total))
+
+                            non_reset_wasted_total += duration
+                            non_reset_wasted_series.append((ts, non_reset_wasted_total))
+                        
+                        if ip in active_clients:
+                            del active_clients[ip]
+
+                    elif (match := stats_pattern.search(processed_line)):
+                        ts = datetime.strptime(match["timestamp"], "%Y-%m-%dT%H:%M:%S")
+                        timestamps.append(ts)
+                        current_clients.append(int(match["current"]))
+                        cumulative_total_connections += int(match["current"])
+                        cumulative_connections.append(cumulative_total_connections)
+
+                        incremental = 0
+                        for start_ts in active_clients.values():
+                            duration = (ts - start_ts).total_seconds() * 1000  # ms
+                            incremental += int(duration)
+
+                        virtual_total = wasted_time_total + incremental
+                        wasted_time_series.append((ts, virtual_total))
+                        # print(f"[{ts}] Actual: {wasted_time_total} ms, Smoothed: {simulated_total} ms, Clients: {len(active_clients)}")
+
+                    elif (match := ssdp_request_pattern.search(processed_line)):
+                        ip = match["ip"]
+                        ts = datetime.strptime(match["timestamp"], "%Y-%m-%dT%H:%M:%S")
+                        ssdp_total += multiplier
+                        ssdp_counts[ts] = ssdp_total
+
+                    elif (match := xml_http_ssdp_pattern.search(processed_line)):
+                        ts = datetime.strptime(match["timestamp"], "%Y-%m-%dT%H:%M:%S")
+                        http_counts[ts] = int(match["http"])
+                        xml_counts[ts] = int(match["xml"])
+                        # if int(match["http"]) < last_http_count:
+                        #     ssdp_total = 0
+                        #     ssdp_counts[ts] = 0
+                        #     wasted_time_total = 0
+                        #     wasted_time_series.append((ts, 0))
+                        #     cumulative_total_connections = 0
+
+                        # last_http_count = int(match["http"])
+
+                    elif (match := restart_pattern.search(processed_line)):
+                        ts = datetime.strptime(match["timestamp"], "%Y-%m-%dT%H:%M:%S")
+                        restart_times.append(ts)
+
+                        # Reset all cumulative counters
+                        ssdp_total = 0
+                        wasted_time_total = 0
+                        cumulative_total_connections = 0
+
+                        # Append zeros to graph tracking
+                        ssdp_counts[ts] = 0
+                        wasted_time_series.append((ts, 0))
+                        timestamps.append(ts)
+                        current_clients.append(0)
+                        cumulative_connections.append(0)
+                        active_clients.clear()
                     
-                    if ip in active_clients:
-                        del active_clients[ip]
+                    elif (match := accept_pattern.search(processed_line)):
+                        ip = match["ip"]
+                        ts = datetime.strptime(match["timestamp"], "%Y-%m-%dT%H:%M:%S")
+                        if ip not in blacklisted_ips:
+                            active_clients[ip] = ts
 
-                elif (match := stats_pattern.search(processed_line)):
-                    ts = datetime.strptime(match["timestamp"], "%Y-%m-%dT%H:%M:%S")
-                    timestamps.append(ts)
-                    current_clients.append(int(match["current"]))
-                    cumulative_total_connections += int(match["current"])
-                    cumulative_connections.append(cumulative_total_connections)
+    # === WRITE SUMMARY FILE ===
+    with open("./data/text.txt", "w") as f:
+        f.write("Request Counts (method, url):\n")
+        for (method, url), count in sorted(request_counts.items(), key=lambda x: -x[1]):
+            f.write(f"{method} {url}: {count}\n")
 
-                    incremental = 0
-                    for start_ts in active_clients.values():
-                        duration = (ts - start_ts).total_seconds() * 1000  # ms
-                        incremental += int(duration)
+        f.write("\nIP Connections and Trapped Time:\n")
+        for ip in sorted(ip_connections, key=lambda x: -ip_connections[x]):
+            f.write(f"{ip}: {ip_connections[ip]} connections, {ip_durations[ip]} ms trapped\n")
 
-                    virtual_total = wasted_time_total + incremental
-                    wasted_time_series.append((ts, virtual_total))
-                    # print(f"[{ts}] Actual: {wasted_time_total} ms, Smoothed: {simulated_total} ms, Clients: {len(active_clients)}")
+    # === BUILD PLOTTING DATA ===
+    df_stats = pd.DataFrame({
+        "Timestamp": timestamps,
+        "Connected Clients": current_clients,
+        "Cumulative Connections": cumulative_connections
+    }).set_index("Timestamp")
 
-                elif (match := ssdp_request_pattern.search(processed_line)):
-                    ip = match["ip"]
-                    ts = datetime.strptime(match["timestamp"], "%Y-%m-%dT%H:%M:%S")
-                    ssdp_total += multiplier
-                    ssdp_counts[ts] = ssdp_total
+    df_traffic = pd.DataFrame({
+        "SSDP": pd.Series(ssdp_counts),
+        "HTTP": pd.Series(http_counts),
+        "XML": pd.Series(xml_counts)
+    }).sort_index().ffill()
 
-                elif (match := xml_http_ssdp_pattern.search(processed_line)):
-                    ts = datetime.strptime(match["timestamp"], "%Y-%m-%dT%H:%M:%S")
-                    http_counts[ts] = int(match["http"])
-                    xml_counts[ts] = int(match["xml"])
-                    # if int(match["http"]) < last_http_count:
-                    #     ssdp_total = 0
-                    #     ssdp_counts[ts] = 0
-                    #     wasted_time_total = 0
-                    #     wasted_time_series.append((ts, 0))
-                    #     cumulative_total_connections = 0
+    df_wasted = pd.DataFrame(wasted_time_series, columns=["Timestamp", "Accumulated Wasted Time"]).set_index("Timestamp")
 
-                    # last_http_count = int(match["http"])
+    df_wasted = pd.DataFrame(wasted_time_series, columns=["Timestamp", "Accumulated Wasted Time"]).set_index("Timestamp")
+    df_wasted.index = pd.to_datetime(df_wasted.index)
 
-                elif (match := restart_pattern.search(processed_line)):
-                    ts = datetime.strptime(match["timestamp"], "%Y-%m-%dT%H:%M:%S")
-                    restart_times.append(ts)
+    df_nonreset_wasted = pd.DataFrame(non_reset_wasted_series, columns=["Timestamp", "UPnP (Non-Resetting)"]).set_index("Timestamp")
+    df_nonreset_wasted.index = pd.to_datetime(df_nonreset_wasted.index)
 
-                    # Reset all cumulative counters
-                    ssdp_total = 0
-                    wasted_time_total = 0
-                    cumulative_total_connections = 0
+    plt.figure(figsize=(16, 6))
+    df_nonreset_wasted.plot(legend=False, figsize=(16, 6), drawstyle='steps-pre')
+    plt.ylabel("Milliseconds")
+    plt.savefig("data/non_reset_wasted_time_over_time.png")
+    
+    # df_wasted = pd.DataFrame(simulated_wasted_series, columns=["Timestamp", "Accumulated Wasted Time"]).set_index("Timestamp")
+    
+    # === SAVE GRAPHS ===
+    plt.figure(figsize=(16, 6))
+    df_stats.plot(title="Concurrent and Cumulative Connections", figsize=(16, 6))
+    for rt in restart_times:
+        plt.axvline(x=rt, color='red', linestyle='--', alpha=0.6, linewidth=1)
+    plt.savefig("data/connections_over_time.png")
 
-                    # Append zeros to graph tracking
-                    ssdp_counts[ts] = 0
-                    wasted_time_series.append((ts, 0))
-                    timestamps.append(ts)
-                    current_clients.append(0)
-                    cumulative_connections.append(0)
-                    active_clients.clear()
-                
-                elif (match := accept_pattern.search(processed_line)):
-                    ip = match["ip"]
-                    ts = datetime.strptime(match["timestamp"], "%Y-%m-%dT%H:%M:%S")
-                    if ip not in blacklisted_ips:
-                        active_clients[ip] = ts
+    plt.figure(figsize=(16, 6))
+    df_traffic.plot(title="SSDP, HTTP, and XML Requests Over Time", figsize=(16, 6), drawstyle='steps-pre')
+    for rt in restart_times:
+        plt.axvline(x=rt, color='red', linestyle='--', alpha=0.6, linewidth=1)
+    plt.savefig("data/request_types_over_time.png")
 
-# === WRITE SUMMARY FILE ===
-with open("./data/text.txt", "w") as f:
-    f.write("Request Counts (method, url):\n")
-    for (method, url), count in sorted(request_counts.items(), key=lambda x: -x[1]):
-        f.write(f"{method} {url}: {count}\n")
+    plt.figure(figsize=(16, 6))
+    df_wasted.plot(title="Accumulated Wasted Time (ms)", legend=False, figsize=(16, 6), drawstyle='steps-pre')
+    plt.ylabel("Milliseconds")
 
-    f.write("\nIP Connections and Trapped Time:\n")
-    for ip in sorted(ip_connections, key=lambda x: -ip_connections[x]):
-        f.write(f"{ip}: {ip_connections[ip]} connections, {ip_durations[ip]} ms trapped\n")
+    for rt in restart_times:
+        plt.axvline(x=rt, color='red', linestyle='--', alpha=0.6, linewidth=1)
 
-# === BUILD PLOTTING DATA ===
-df_stats = pd.DataFrame({
-    "Timestamp": timestamps,
-    "Connected Clients": current_clients,
-    "Cumulative Connections": cumulative_connections
-}).set_index("Timestamp")
+    plt.savefig("data/wasted_time_over_time.png")
 
-df_traffic = pd.DataFrame({
-    "SSDP": pd.Series(ssdp_counts),
-    "HTTP": pd.Series(http_counts),
-    "XML": pd.Series(xml_counts)
-}).sort_index().ffill()
+    return df_nonreset_wasted.rename(columns={"Accumulated Wasted Time": "UPnP"})
 
-df_wasted = pd.DataFrame(wasted_time_series, columns=["Timestamp", "Accumulated Wasted Time"]).set_index("Timestamp")
-# df_wasted = pd.DataFrame(simulated_wasted_series, columns=["Timestamp", "Accumulated Wasted Time"]).set_index("Timestamp")
-
-# === SAVE GRAPHS ===
-plt.figure(figsize=(16, 6))
-df_stats.plot(title="Concurrent and Cumulative Connections", figsize=(16, 6))
-for rt in restart_times:
-    plt.axvline(x=rt, color='red', linestyle='--', alpha=0.6, linewidth=1)
-plt.savefig("data/connections_over_time.png")
-
-plt.figure(figsize=(16, 6))
-df_traffic.plot(title="SSDP, HTTP, and XML Requests Over Time", figsize=(16, 6), drawstyle='steps-pre')
-for rt in restart_times:
-    plt.axvline(x=rt, color='red', linestyle='--', alpha=0.6, linewidth=1)
-plt.savefig("data/request_types_over_time.png")
-
-# -------
-# df_clients = pd.DataFrame(client_snapshot_series, columns=["timestamp", "current_clients"])
-# df_waste = pd.DataFrame(wasted_snapshot_series, columns=["timestamp", "wasted_time"])
-
-# if not df_clients.empty and not df_waste.empty:
-#     df_combined = pd.merge_asof(
-#         df_clients.sort_values("timestamp"),
-#         df_waste.sort_values("timestamp"),
-#         on="timestamp",
-#         direction="backward"
-#     ).sort_values("timestamp").reset_index(drop=True)
-
-#     smooth_times = [df_combined.loc[0, "timestamp"]]
-#     smooth_waste = [df_combined.loc[0, "wasted_time"]]
-
-#     for i in range(1, len(df_combined)):
-#         t1 = df_combined.loc[i - 1, "timestamp"]
-#         t2 = df_combined.loc[i, "timestamp"]
-#         dt = (t2 - t1).total_seconds() * 1000  # ms
-#         n_clients = df_combined.loc[i - 1, "current_clients"]
-#         prev_waste = smooth_waste[-1]
-#         simulated = prev_waste + (dt * n_clients)
-
-#         smooth_times.append(t2)
-#         smooth_waste.append(simulated)
-
-#     df_wasted = pd.DataFrame({
-#         "Timestamp": smooth_times,
-#         "Accumulated Wasted Time": smooth_waste
-#     }).set_index("Timestamp")
-# ------
-
-plt.figure(figsize=(16, 6))
-df_wasted.plot(title="Accumulated Wasted Time (ms)", legend=False, figsize=(16, 6), drawstyle='steps-pre')
-plt.ylabel("Milliseconds")
-
-for rt in restart_times:
-    plt.axvline(x=rt, color='red', linestyle='--', alpha=0.6, linewidth=1)
-
-plt.savefig("data/wasted_time_over_time.png")
+if __name__ == '__main__':
+    extract_upnp_data()
