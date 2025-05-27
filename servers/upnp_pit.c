@@ -140,10 +140,10 @@ void *ssdpListener(void *arg) {
     serverAddr.sin_port = htons(ssdpPort);
 
     // Join the SSDP multicast group
-    struct ip_mreq mreq;
-    mreq.imr_multiaddr.s_addr = inet_addr(SSDP_MULTICAST);
-    mreq.imr_interface.s_addr = INADDR_ANY;
-    setsockopt(sockFd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
+    // struct ip_mreq mreq;
+    // mreq.imr_multiaddr.s_addr = inet_addr(SSDP_MULTICAST);
+    // mreq.imr_interface.s_addr = INADDR_ANY;
+    // setsockopt(sockFd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
 
     if (bind(sockFd, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
         fprintf(stderr, "SSDP Bind failed");
