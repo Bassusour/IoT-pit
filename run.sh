@@ -99,8 +99,7 @@ function startCoap() {
     local MAX_RETRANSMIT=$4
     local maxNoClients=$5
     echo "Starting coap_pit with port=$port, delay=$delay, ACK_TIMEOUT=$ACK_TIMEOUT, MAX_RETRANSMIT=$MAX_RETRANSMIT max-no-clients=$maxNoClients"
-
-    exec "$BIN_DIR/coap_pit" "$port" "$delay" "$ACK_TIMEOUT" "$MAX_RETRANSMIT"
+    exec "$BIN_DIR/coap_pit" "$port" "$delay" "$ACK_TIMEOUT" "$MAX_RETRANSMIT" "$maxNoClients"
 }
 
 function stopServer() {
