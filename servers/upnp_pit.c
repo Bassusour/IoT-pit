@@ -360,6 +360,8 @@ void initializeStats(){
 }
 
 int main(int argc, char* argv[]) {
+    setbuf(stdout, NULL);
+    
     // testing
     // char msg[256];
     // snprintf(msg, sizeof(msg), "%s connect %s\n",

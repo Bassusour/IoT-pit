@@ -120,6 +120,8 @@ int sendPing(uint16_t messageId, struct sockaddr_in* addr, socklen_t addrLen) {
 }
 
 int main(int argc, char* argv[]) {
+    setbuf(stdout, NULL);
+
     // testing
     // char msg[256];
     // snprintf(msg, sizeof(msg), "%s connect %s\n",
