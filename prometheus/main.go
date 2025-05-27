@@ -127,11 +127,11 @@ func main() {
 	m := NewMetrics()
 
 	// test values
-	m.totalTrappedTime.WithLabelValues("Telnet").Add(10)
-	m.totalTrappedTime.WithLabelValues("UPnP").Add(20)
-	m.totalTrappedTime.WithLabelValues("MQTT").Add(30)
-	m.totalTrappedTime.WithLabelValues("CoAP").Add(40)
-	m.totalTrappedTime.WithLabelValues("SSH").Add(50)
+	// m.totalTrappedTime.WithLabelValues("Telnet").Add(10)
+	// m.totalTrappedTime.WithLabelValues("UPnP").Add(20)
+	// m.totalTrappedTime.WithLabelValues("MQTT").Add(30)
+	// m.totalTrappedTime.WithLabelValues("CoAP").Add(40)
+	// m.totalTrappedTime.WithLabelValues("SSH").Add(50)
 
 	// Start socket listener
 	go listenForMetrics("/tmp/tarpit_exporter.sock", m)
