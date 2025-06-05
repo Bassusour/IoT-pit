@@ -186,6 +186,11 @@ def extract_upnp_data():
         f.write("\nIP Connections and Trapped Time:\n")
         for ip in sorted(ip_connections, key=lambda x: -ip_connections[x]):
             f.write(f"{ip}: {ip_connections[ip]} connections, {ip_durations[ip]} ms trapped\n")
+    
+    unique_ips = set(ip_connections.keys())
+    with open("./data/unique_ips.txt", "w") as f_ip:
+        for ip in sorted(unique_ips):
+            f_ip.write(ip + "\n")
 
     # === BUILD PLOTTING DATA ===
     df_stats = pd.DataFrame({

@@ -235,6 +235,12 @@ def extract_mqtt_data():
         ip_counts = df_duration["ip"].value_counts().to_dict()
         df_duration["count"] = df_duration["ip"].map(ip_counts)
         df_duration.to_csv("data/connection_durations.txt", sep="\t", index=False)
+    
+    if connection_durations:
+        unique_ips = sorted({entry["ip"] for entry in connection_durations if "ip" in entry})
+        with open("data/unique_ips.txt", "w") as f:
+            for ip in unique_ips:
+                f.write(f"{ip}\n")
 
     # 3. subscribe_info: topic + qos with count
     if subscribe_info:
