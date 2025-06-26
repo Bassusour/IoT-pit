@@ -221,8 +221,15 @@ func handleMetric(line string, metrics *metrics) {
 		metrics.mqttSubscribeTopics.WithLabelValues(topic, qos).Inc()
 
 	case "credentials":
-		username := fields[2]
-		password := fields[3]
+		username := " "
+		password := " "
+		if len(fields) >= 3 {
+			username = fields[2]
+		}
+		if len(fields) >= 4 {
+			password = fields[3]
+		}
+		
 		metrics.mqttCredentials.WithLabelValues(username, password).Inc()
 
 	case "PUBLISH":
