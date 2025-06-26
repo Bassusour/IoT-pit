@@ -191,8 +191,15 @@ func handleMetric(line string, metrics *metrics) {
 		handleDisconnect(server, timeTrapped, metrics)
 	// UPnP
 	case "otherHttpRequests":
-		method := fields[2]
-		url := fields[3]
+		method := " "
+		url := " "
+		if len(fields) >= 3 {
+			method = fields[2]
+		}
+		if len(fields) >= 4 {
+			url = fields[3]
+		}
+		
 		metrics.upnpOtherHttpRequests.WithLabelValues(method, url).Inc()
 	case "M-SEARCH":
 		ip := fields[2]
